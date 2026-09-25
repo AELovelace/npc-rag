@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+# Downloaded embedding model and the built index are recreated by Install-NpcRag.ps1.
+data/models/
+data/index/
+data/*.log
+logs/

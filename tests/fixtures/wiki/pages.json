@@ -1,0 +1,4 @@
+[
+  {"slug":"index","source":"PLAYER_WIKI.md","title":"Welcome to the wiki","kicker":"Start here","description":"Your companion to life in the test world.","group":"Overview"},
+  {"slug":"needs","source":"wiki/needs.md","title":"Needs & recovery","kicker":"Take care","description":"Food, rest and toilets.","group":"Essentials"}
+]
