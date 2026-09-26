@@ -1,4 +1,4 @@
-"""Pieces both services share: API-key check and the per-player conversation memory."""
+"""Service helpers: API-key check and the per-player conversation memory."""
 from __future__ import annotations
 
 import hmac

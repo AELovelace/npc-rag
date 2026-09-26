@@ -18,8 +18,9 @@ How to reply:
 GAME_MODE = """
 This is a question about how the game works. Answer it using ONLY the guidebook notes below.
 - If the notes answer it, explain the answer simply and name the place, button or item the player needs.
+- When the notes give a general method that works anywhere and also a service in one particular town, give the general method first; mention the town service only as an extra.
 - If the notes don't cover it, say you're not sure and suggest the wiki page that seems closest. Never invent places, prices, numbers or mechanics.
-{strength}
+
 Guidebook notes:
 {notes}"""
 
@@ -27,8 +28,6 @@ GENERAL_MODE = """
 This is casual conversation, not a question about game rules. Chat back warmly and briefly as {name}.
 - Everyday common knowledge is fine, but you don't follow real-world news or dates.
 - You have no guidebook notes for this message, so never state facts about the game world: no places, people, gods, items, rules or prices. If the player asks about one, say you're not sure offhand and suggest the player wiki."""
-
-WEAK = "- These notes only loosely match the question, so check they really answer it before relying on them."
 
 
 def clean_name(name: str | None, fallback: str) -> str:
@@ -41,12 +40,16 @@ def format_notes(hits: list[dict]) -> str:
     return "\n\n".join(f"[{i}] {h['page_title']} > {h['heading']}\n{h['text']}" for i, h in enumerate(hits, 1))
 
 
+def rules_text(*, npc_name: str, player_name: str, persona: str) -> str:
+    """The rules and persona without any notes: what a reply must never recite."""
+    return RULES.format(name=npc_name, player=player_name, persona=persona.strip(), mode="")
+
+
 def build_messages(*, npc_name: str, player_name: str, persona: str, category: str, message: str,
-                   history: list[dict], hits: list[dict], relevant: bool) -> list[dict]:
+                   history: list[dict], hits: list[dict]) -> list[dict]:
     """System prompt (rules + persona + mode) followed by the remembered turns and the new message."""
     if category == "game":
-        notes = format_notes(hits) if hits else "(nothing in the guidebook matched this question)"
-        mode = GAME_MODE.format(strength="" if relevant else WEAK, notes=notes)
+        mode = GAME_MODE.format(notes=format_notes(hits))
     else:
         mode = GENERAL_MODE.format(name=npc_name)
     system = RULES.format(name=npc_name, player=player_name, persona=persona.strip(), mode=mode)
@@ -83,3 +86,13 @@ def fallback_reply(category: str, hits: list[dict]) -> str:
     if category == "game":
         return "My head's a bit foggy right now. The player wiki has guides for just about everything, so try there!"
     return "Sorry, I lost my train of thought! Could you say that again in a moment?"
+
+
+def unsure_reply(category: str, hits: list[dict]) -> str:
+    """What the NPC says when the guard finds no usable notes or rejects an invented answer."""
+    if category == "game" and hits:
+        return f"I'm not sure about that one offhand. The wiki page \"{hits[0]['page_title']}\" might have what you need!"
+    return "I'm not sure about that one offhand, and I'd rather not guess. The player wiki is the best place to check!"
+
+
+LEAK_REPLY = "That's between me and the people who made me! Ask me something about the game instead."

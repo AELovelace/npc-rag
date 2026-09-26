@@ -33,10 +33,6 @@ def _env_float(name: str, default: float) -> float:
     return float(_env(name, str(default)))
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    return _env(name, "1" if default else "0").lower() in {"1", "true", "yes", "on"}
-
-
 def _path(name: str, default: str) -> Path:
     p = Path(_env(name, default))
     return p if p.is_absolute() else ROOT / p  # Relative paths are relative to the repo, not the working directory.
@@ -45,14 +41,12 @@ def _path(name: str, default: str) -> Path:
 @dataclass(frozen=True)
 class Settings:
     # ── Network layout ────────────────────────────────────────────────────
-    llm_url: str                 # llama.cpp server that writes the NPC's reply (port 9090).
-    rag_url: str                 # Where the agent reaches the RAG service (port 9092).
-    agent_host: str              # Bind address for the classifier/agent service.
-    agent_port: int              # 9091: classifier + the player-facing /v1/npc/chat endpoint.
-    rag_host: str                # Bind address for the RAG service.
-    rag_port: int                # 9092: wiki retrieval.
+    llm_url: str                 # llama.cpp server that writes the NPC's reply (Sakura's 9090).
+    classifier_url: str          # Small llama.cpp model that answers GAME or CHAT (Sakura's 9091).
+    host: str                    # Bind address for npc-rag.
+    port: int                    # 9092: /v1/npc/chat for the game server, plus /v1/search and /v1/reindex.
     api_key: str                 # Shared secret callers must send; empty disables the check.
-    llm_api_key: str             # Optional bearer token for llama.cpp's --api-key.
+    llm_api_key: str             # Optional bearer token for llama.cpp's --api-key (both model servers).
 
     # ── Wiki index ────────────────────────────────────────────────────────
     wiki_source: str             # Public wiki URL, or a local web/wiki folder with pages.json + content/.
@@ -65,10 +59,9 @@ class Settings:
     min_relevance: float         # Dense score below which retrieval counts as "nothing relevant".
 
     # ── Classifier ────────────────────────────────────────────────────────
-    seeds_path: Path             # Labelled example messages the classifier compares against.
-    classifier_margin: float     # kNN margin needed to decide without asking for more evidence.
-    rag_game_evidence: float     # Wiki score that makes an unsure message count as a game question.
-    llm_tiebreak: bool           # Ask the LLM for a one-word verdict when the CPU signals disagree.
+    classifier_model: str        # Model name sent to the classifier server.
+    classifier_timeout: float    # Seconds before giving up on the classifier and using the wiki score.
+    rag_game_evidence: float     # Wiki score that makes a message a game question when the classifier is down.
 
     # ── Reply generation ──────────────────────────────────────────────────
     npc_name: str                # Default NPC name when the caller does not send one.
@@ -76,7 +69,11 @@ class Settings:
     llm_model: str               # Model name sent to llama.cpp (it serves whatever is loaded).
     max_tokens: int              # Reply length cap in tokens.
     temperature: float
-    max_reply_chars: int         # Hard cap so the reply fits the in-game dialogue box.
+    guard_keep_margin: float     # Sections scoring this far below the best one are not shown to the model.
+    guard_min_words: int         # Shorter sections (chapter overviews) never count as notes.
+    guard_retries: int           # Extra attempts when a reply names things no source mentions.
+    guard_allowed_terms: tuple[str, ...]  # Names a reply may use even though no source mentions them.
+    max_reply_chars: int       # Hard cap so the reply fits the in-game dialogue box.
     llm_timeout: float           # Seconds to wait for llama.cpp before using a fallback line.
     llm_concurrency: int         # Simultaneous llama.cpp requests (the server has 4 slots).
     top_k: int                   # Wiki excerpts given to the LLM for a game question.
@@ -88,14 +85,11 @@ class Settings:
 def load_settings() -> Settings:
     """Build Settings from the environment, loading ROOT/.env first."""
     _load_dotenv(ROOT / ".env")
-    rag_port = _env_int("RAG_PORT", 9092)
     return Settings(
-        llm_url=_env("LLM_URL", "http://47.51.162.110:9090").rstrip("/"),
-        rag_url=_env("RAG_URL", f"http://127.0.0.1:{rag_port}").rstrip("/"),
-        agent_host=_env("AGENT_HOST", "0.0.0.0"),
-        agent_port=_env_int("AGENT_PORT", 9091),
-        rag_host=_env("RAG_HOST", "127.0.0.1"),
-        rag_port=rag_port,
+        llm_url=_env("LLM_URL", "http://127.0.0.1:9090").rstrip("/"),
+        classifier_url=_env("CLASSIFIER_URL", "http://127.0.0.1:9091").rstrip("/"),
+        host=_env("NPC_HOST", "0.0.0.0"),
+        port=_env_int("NPC_PORT", 9092),
         api_key=_env("NPC_API_KEY", ""),
         llm_api_key=_env("LLM_API_KEY", ""),
         wiki_source=_env("WIKI_SOURCE", "https://lidoll.dev/wiki/"),
@@ -106,15 +100,18 @@ def load_settings() -> Settings:
         embed_threads=_env_int("EMBED_THREADS", 0),
         chunk_words=_env_int("CHUNK_WORDS", 180),
         min_relevance=_env_float("MIN_RELEVANCE", 0.60),
-        seeds_path=_path("CLASSIFIER_SEEDS", "data/classifier_seeds.json"),
-        classifier_margin=_env_float("CLASSIFIER_MARGIN", 0.04),
+        classifier_model=_env("CLASSIFIER_MODEL", "local"),
+        classifier_timeout=_env_float("CLASSIFIER_TIMEOUT", 10.0),
         rag_game_evidence=_env_float("RAG_GAME_EVIDENCE", 0.66),
-        llm_tiebreak=_env_bool("CLASSIFIER_LLM_TIEBREAK", True),
         npc_name=_env("NPC_NAME", "Pip"),
         persona_path=_path("PERSONA_FILE", "data/persona.md"),
         llm_model=_env("LLM_MODEL", "local"),
         max_tokens=_env_int("LLM_MAX_TOKENS", 220),
         temperature=_env_float("LLM_TEMPERATURE", 0.6),
+        guard_keep_margin=_env_float("GUARD_KEEP_MARGIN", 0.06),
+        guard_min_words=_env_int("GUARD_MIN_WORDS", 15),
+        guard_retries=_env_int("GUARD_RETRIES", 1),
+        guard_allowed_terms=tuple(t.strip() for t in _env("GUARD_ALLOWED_TERMS", "").split(",") if t.strip()),
         max_reply_chars=_env_int("MAX_REPLY_CHARS", 600),
         llm_timeout=_env_float("LLM_TIMEOUT", 45.0),
         llm_concurrency=_env_int("LLM_CONCURRENCY", 2),

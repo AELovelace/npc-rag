@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import dataclasses
-import json
 from pathlib import Path
 
 import pytest
@@ -22,19 +21,14 @@ def embedder():
 
 @pytest.fixture
 def settings(tmp_path):
-    seeds = tmp_path / "seeds.json"
-    seeds.write_text(json.dumps({
-        "game": ["where is the toilet", "how do I remove a cursed item", "what does RPP do", "how do levels work"],
-        "general": ["hello there friend", "how are you today", "tell me a joke please", "what is your favourite colour"],
-    }), encoding="utf-8")
     persona = tmp_path / "persona.md"
-    persona.write_text("You are a cheerful test guide.", encoding="utf-8")
+    persona.write_text("You are a cheerful test guide who loves helping new players find their way.", encoding="utf-8")
     return dataclasses.replace(
         load_settings(),
-        llm_url="http://llama.test", rag_url="http://rag.test", api_key="", llm_api_key="",
+        llm_url="http://llama.test", classifier_url="http://classifier.test", api_key="", llm_api_key="",
         wiki_source=str(FIXTURE_WIKI), wiki_public_url="https://wiki.test/wiki/",
-        index_dir=tmp_path / "index", seeds_path=seeds, persona_path=persona,
-        classifier_margin=0.05, rag_game_evidence=0.5, llm_tiebreak=False, min_relevance=0.2,
+        index_dir=tmp_path / "index", persona_path=persona,
+        rag_game_evidence=0.5, min_relevance=0.2, guard_keep_margin=1.0, guard_min_words=3, guard_retries=1, guard_allowed_terms=(),
         session_turns=6, max_message_chars=200, max_reply_chars=300,
     )
 

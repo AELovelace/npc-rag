@@ -1,7 +1,7 @@
 [project]
 name = "npc-rag"
 version = "0.1.0"
-description = "Tutorial NPC for LiDollQuest: CPU classifier + wiki RAG in front of a llama.cpp server"
+description = "Tutorial NPC for LiDollQuest: wiki RAG and reply guards around Sakura's llama.cpp servers"
 requires-python = ">=3.10"
 dependencies = [
   "fastembed>=0.4",

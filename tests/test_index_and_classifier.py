@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from npc_rag.bm25 import BM25, tokenize
-from npc_rag.classifier import GAME, GENERAL, Classifier, parse_tiebreak
+from npc_rag.classifier import GAME, GENERAL, classify, parse_verdict
 from npc_rag.embedder import HashEmbedder
 from npc_rag.index import WikiIndex
 
@@ -35,37 +35,35 @@ def test_index_round_trip_and_model_check(index, tmp_path):
         WikiIndex.load(tmp_path / "idx", Other())
 
 
-def _clf(embedder, **kw):
-    return Classifier(embedder, ["where is the toilet", "how do I remove a cursed item"],
-                      ["hello there friend", "tell me a joke please"], margin=0.2, wiki_evidence=0.5, **kw)
+def _run(answer, wiki_best):
+    async def ask(_):
+        return answer
+
+    async def evidence(_):
+        return wiki_best
+
+    return asyncio.run(classify("purple banana", ask_llm=ask, evidence=evidence, wiki_evidence=0.5))
 
 
-def test_knn_decides_clear_cases(embedder):
-    v = asyncio.run(_clf(embedder).classify("where is the nearest toilet"))
-    assert (v.category, v.method) == (GAME, "knn")
-    v = asyncio.run(_clf(embedder).classify("hello friend"))
-    assert (v.category, v.method) == (GENERAL, "knn")
+def test_classifier_model_decides_when_the_wiki_is_unsure():
+    assert (_run(GENERAL, 0.3).category, _run(GENERAL, 0.3).method) == (GENERAL, "llm")
+    assert (_run(GAME, 0.3).category, _run(GAME, 0.3).method) == (GAME, "llm")
 
 
-def test_unsure_messages_use_wiki_then_llm(embedder):
-    async def strong(_):
-        return 0.9
-
-    async def weak(_):
-        return 0.1
-
-    async def llm_says_chat(_):
-        return GENERAL
-
-    v = asyncio.run(_clf(embedder, evidence=strong).classify("purple banana"))
+def test_strong_wiki_match_overrides_chat():
+    v = _run(GENERAL, 0.9)
     assert (v.category, v.method) == (GAME, "wiki")
-    v = asyncio.run(_clf(embedder, evidence=weak, tiebreak=llm_says_chat).classify("purple banana"))
-    assert (v.category, v.method) == (GENERAL, "llm")
-    v = asyncio.run(_clf(embedder, evidence=weak).classify("purple banana"))
-    assert v.method == "knn-weak"
+    assert _run(GAME, 0.9).method == "llm"
 
 
-def test_parse_tiebreak():
-    assert parse_tiebreak("GAME") == GAME
-    assert parse_tiebreak(" chat.") == GENERAL
-    assert parse_tiebreak("maybe") is None and parse_tiebreak("") is None
+def test_wiki_score_decides_when_the_model_is_down():
+    assert (_run(None, 0.9).category, _run(None, 0.9).method) == (GAME, "wiki")
+    assert _run(None, 0.1).category == GENERAL
+    assert _run(None, None).category == GENERAL  # No model, no index: treat it as small talk.
+
+
+def test_parse_verdict():
+    assert parse_verdict("GAME") == GAME
+    assert parse_verdict(" chat.") == GENERAL
+    assert parse_verdict("**Game**") == GAME
+    assert parse_verdict("maybe") is None and parse_verdict("") is None

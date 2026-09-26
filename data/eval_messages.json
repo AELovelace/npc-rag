@@ -1,5 +1,5 @@
 {
-  "_about": "Held-out messages for python -m npc_rag eval. Never copy these into classifier_seeds.json, or the accuracy number stops meaning anything.",
+  "_about": "Held-out messages for python -m npc_rag eval. Don't tune CLASSIFY_PROMPT on these specific messages, or the accuracy number stops meaning anything.",
   "game": [
     "where's the nearest bathroom",
     "how do i get my stuff uncursed",
