@@ -114,7 +114,21 @@ def main(argv: list[str] | None = None) -> int:
     e = sub.add_parser("eval", help="classifier accuracy on data/eval_messages.json")
     e.add_argument("--wiki-only", action="store_true", help="skip the classifier model; wiki score only")
 
+    gm = sub.add_parser("gm-build-index", help="build the separate GM handbook index")
+    gm.add_argument("--source", help="GM wiki folder or URL (default: GM_WIKI_SOURCE)")
+    sub.add_parser("gm-serve", help="run the staff handbook service on GM_PORT (9093)")
+
     args = p.parse_args(argv)
+    if args.cmd.startswith("gm-"):
+        from .gm import load_gm_settings, build_gm_index, create_gm_app
+        settings = load_gm_settings()
+        if args.cmd == "gm-build-index":
+            index = build_gm_index(settings, _embedder(settings), args.source)
+            print(json.dumps({k: v for k, v in index.meta.items() if k != "illustrations"}, indent=1))
+        else:
+            import uvicorn
+            uvicorn.run(create_gm_app(settings), host=settings.host, port=settings.port, log_level="info")
+        return 0
     s = load_settings()
     commands = {"build-index": cmd_build_index, "serve": cmd_serve, "search": cmd_search, "ask": cmd_ask, "eval": cmd_eval}
     return commands[args.cmd](s, args)

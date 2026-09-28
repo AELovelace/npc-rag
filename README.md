@@ -126,9 +126,21 @@ Otherwise `guard` is `passed`, or `llm_unavailable` when the main model couldn't
 
 All settings are listed with comments in `.env.example`.
 
-## Not done yet: the in-game NPC
+## The in-game NPC
 
-This service is the brain. The game side still needs:
-1. A Lidollquest-server command that forwards a player's message to `POST /v1/npc/chat` on port 9092 with the API key. It should use the character id as `player_id`, rate-limit per player, and answer asynchronously, because replies take several seconds.
-2. A GML text-entry dialogue for talking to Pip, plus an NPC placed in the starting hubs.
-3. GM panel and game editor toggles: an on/off switch and the NPC's name.
+The game side is built (2026-09-25):
+
+- **Lidollquest-server** (`server/tutor.mjs`) places Pip in the five starting lobbies, stores each question from the
+  `tutor_ask` command, and forwards it to `POST /v1/npc/chat` on port 9092 in the background with `X-Api-Key`. It uses
+  the character id as `player_id` and the character's name as `player_name`, and limits each character to one
+  question at a time, a 4 s pause and 100 questions per account per day. Configure it with `NPC_RAG_URL` and
+  `NPC_RAG_KEY` in the game server's env; see its README, "Tutor NPC (Pip)".
+- **The game client** turns the chat box into a "To Pip" box after **Ask a question.** and shows the answer in the
+  dialogue box and the action log.
+- **The `/gm` panel** has a **Tutor NPC** tab: on/off, name, greeting, npc-rag health and the latest questions.
+
+The game server must be able to reach this machine on port 9092: run `ps\Register-NpcRagTasks.ps1 -AllowFrom <game server IP>`.
+
+## Separate GM handbook assistant
+
+The editor can open a staff chat window backed by a separate GM wiki index and service on port 9093. All questions are proxied by the game server, preserving the AI server's public-IP allowlist. See [GM_HELP.md](GM_HELP.md) for setup, service keys, firewall rules, screenshots, index refresh and tests. The player service on 9092 is unchanged.

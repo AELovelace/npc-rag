@@ -8,3 +8,6 @@ data/models/
 data/index/
 data/*.log
 logs/
+
+# Separate generated GM handbook index.
+data/gm-index/
