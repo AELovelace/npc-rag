@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import re
 
 from ..bm25 import tokenize
 from ..prompts import format_notes
@@ -28,8 +29,8 @@ SUMMARY = "\nHow things stand between you and {player}: {summary}"
 MEMORIES = "\nThings you really did together with {player} (bring one up only if it fits):\n{items}"
 GOSSIP = ("\nSomething you remember from traveling with someone else. Never name or describe who it was; "
           "call them \"someone I traveled with\":\n{items}")
-SLIP = ("\nOther players are listening, and you can't resist teasing {player} about this, lightly and in character "
-        "(it really happened):\n- {text}")
+SLIP = ("\nOther players are listening, and you can't resist teasing {player} about this moment. It happened to {player}, "
+        "not to you: say it to {player} (\"you\"), lightly and in character:\n- {text}")
 
 GAME_MODE = """
 This is a question about how the game works. Answer it using ONLY the guidebook notes below.
@@ -93,7 +94,24 @@ def _sensitive(word: str) -> bool:
     return word.startswith(SENSITIVE_STEMS)
 
 
-def mentions(reply: str, memory: str, ignore: set[str]) -> bool:
+_SENTENCES = re.compile(r"[^.!?]+")
+_ADDRESSED = re.compile(r"\b(you|your|you're|yours|yourself)\b", re.I)
+_SELF = re.compile(r"\b(i|i'm|i've|i'd|me|my|myself)\b[^.!?]{0,30}$", re.I)  # First person shortly before the word.
+
+
+def _aimed_at_player(reply: str, player: str) -> bool:
+    """An embarrassing word in a sentence about the player ("your little accident"), not one where the companion tells
+    their own story ("I had an accident there once"). Live 2026-10-12 the model flipped whose accident it was."""
+    name = re.compile(rf"\b{re.escape(player)}\b", re.I) if player else None
+    for sentence in _SENTENCES.findall(reply):
+        about_player = bool(_ADDRESSED.search(sentence) or (name and name.search(sentence)))
+        for m in re.finditer(r"[a-z'-]+", sentence.lower()):
+            if _sensitive(m.group(0)) and about_player and not _SELF.search(sentence[: m.start()]):
+                return True
+    return False
+
+
+def mentions(reply: str, memory: str, ignore: set[str], player: str = "") -> bool:
     """True when the reply clearly brings up this embarrassing memory: it uses an embarrassing word AND shares
     something specific with the memory (a place, an enemy, the event itself).
 
@@ -103,6 +121,8 @@ def mentions(reply: str, memory: str, ignore: set[str]) -> bool:
     said = {w for w in tokenize(reply) if w not in GENERIC}
     if not any(_sensitive(w) for w in said):
         return False                                           # Nothing embarrassing was actually said.
+    if not _aimed_at_player(reply, player):
+        return False                                           # The companion's own story costs the player nothing.
     words = {w for w in tokenize(memory) if len(w) >= 4 and w not in ignore and w not in GENERIC}  # Names never count.
     if not words:
         return False

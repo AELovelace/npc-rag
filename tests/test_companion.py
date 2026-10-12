@@ -207,3 +207,19 @@ def test_embarrassing_impressions_are_flagged():
     from npc_rag.companion.reflect import parse_impressions
     facts = parse_impressions('{"facts": [{"text": "Doll said they need help changing their diaper."}, {"text": "Doll said they love tea."}]}', "Doll")
     assert [f["embarrassing"] for f in facts] == [True, False]
+
+
+def test_slips_must_be_about_the_player_not_the_companion():
+    """Live 2026-10-12 on both nodes: the model flipped whose accident it was ("I had an accident there once")."""
+    from npc_rag.companion.prompts import mentions
+    memory, names = "Doll had an accident in the Forest while we were traveling together.", {"doll", "dame", "elowen"}
+    assert not mentions("The Forest is tricky. Doll, you were there when I had that little accident, weren't you?", memory, names, "Doll")
+    assert not mentions("The Forest is beautiful. I had an accident there once, but Doll helped me up.", memory, names, "Doll")
+    assert mentions("Doll had an accident in the Forest, and I kept watch.", memory, names, "Doll")
+    assert mentions("Remember your little accident in the Forest?", memory, names, "Doll")
+
+
+def test_summaries_drop_embarrassing_sentences_in_code():
+    from npc_rag.companion.reflect import tidy_summary
+    text = tidy_summary("We beat the Slime Knight, even after the accident. Doll told me she loves strawberry milk. We are close.")
+    assert text == "Doll told me she loves strawberry milk. We are close."

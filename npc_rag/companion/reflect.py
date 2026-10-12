@@ -73,6 +73,8 @@ def summary_messages(*, npc: str, player: str, summary: str, memories: list[str]
 
 def tidy_summary(text: str, limit: int = 600) -> str:
     text = to_ascii(" ".join((text or "").replace("*", "").split())).strip().strip('"')
+    sentences = [x.strip() for x in re.findall(r"[^.!?]+[.!?]*", text)]
+    text = " ".join(x for x in sentences if x and not any(w.startswith(SENSITIVE_STEMS) for w in tokenize(x)))  # Read in public: embarrassing sentences are cut in code, not just discouraged.
     if len(text) <= limit:
         return text
     cut = text[:limit]
