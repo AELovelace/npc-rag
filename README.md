@@ -58,6 +58,8 @@ Send `Authorization: Bearer <NPC_API_KEY>` or `X-Api-Key: <NPC_API_KEY>`. Withou
 | `player_name` | Optional. Pip addresses the player by it. |
 | `npc_name` | Optional. Overrides `NPC_NAME` for this call, so one service can voice several guides. |
 | `history` | Optional list of `{role: "player"/"npc", content}`. When sent, it replaces the built-in memory (for a game server that stores conversations itself). |
+| `persona` | Optional, up to 1500 characters. Replaces `data/persona.md` for this call, so a companion answers in its own voice. The leak guard checks this persona instead. |
+| `category` | Optional `game`, `general` or `chat` (`chat` means `general`). The caller already classified the message, so the 9091 step is skipped and `method` is `caller`. |
 
 Response:
 
@@ -77,7 +79,7 @@ Response:
 ```
 
 - `reply` is one plain-ASCII paragraph of at most 600 characters (`MAX_REPLY_CHARS`), with no Markdown, so it can go straight into the dialogue box.
-- `method` is `llm` when the classifier model decided, or `wiki` when it was down and the wiki score decided.
+- `method` is `llm` when the classifier model decided, `wiki` when it was down and the wiki score decided, or `caller` when the request's `category` decided.
 - `guard` says what happened to the reply (see [The guard](#the-guard)).
 - `fallback: true` means the main model was down or too slow. Pip then says a canned line, pointing at the best wiki section when there is one. Players always get an answer.
 - `sources` link the wiki sections the reply was written from. They are empty for small talk and whenever the guard replaced the reply.
@@ -89,6 +91,49 @@ Other endpoints:
 - `POST /v1/classify {message}`: returns the classification only.
 - `DELETE /v1/npc/session/{player_id}`: forgets a player's memory.
 - `GET /health`: reports the index and whether both model servers are reachable. It needs no key.
+
+### Companions: `POST /v1/companion/chat` and `/v1/companion/lore` (2026-10-12)
+
+The online companions (Dame Elowen, Mira, Astra, Rosalind, Sable, Vex, Wick) use their own pipeline,
+`npc_rag/companion/`. It is built with **LangGraph** (`langgraph` in requirements.txt). LangChain is not used.
+
+```
+START ─┬─ classify ── wiki ───────┐
+       └─ embed ──┬─ lore ────────┼─ compose ─┬─ generate ─ finish
+                  └─ memories ────┘           └─ (game question with nothing to go on: no model call)
+```
+
+- **classify, wiki, generate:** reuse Pip's classifier, wiki index and guard. Names from the lore and memories count
+  as known, so they pass the guard.
+- **lore:** finds this companion's backstory sections. Each section can be locked behind a minimum `bond` and/or a
+  story flag. Locked sections are never even scored.
+- **memories:** ranks the memories the game server sends: 0.6 × meaning + 0.25 × importance + 0.15 × freshness, above
+  `COMPANION_MEMORY_MIN`.
+  - While other players can hear (`audience > 0`), embarrassing memories stay out. They only appear as a **slip**,
+    which the game server rolls and sends.
+  - Anonymous **gossip** is used only when no shared memory fits.
+- **finish:** checks the reply really mentions the slip (shared meaningful words) before returning
+  `slip: {memory_id}`, which the game server charges Dignity for.
+
+**npc-rag stores nothing about players.** The game server sends everything per call: persona, voice lines, history,
+bond, flags, memories, summary, gossip, audience and slip. The only thing kept on a node is the lore the game server
+pushes (`POST /v1/companion/lore {version, sections}`).
+- A chat whose `lore_version` doesn't match gets **409**, and the game server re-pushes and retries.
+- If the main model is down, the endpoint answers **503**, so the game server's pool tries the other node.
+
+Settings (`.env`):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `COMPANION_LORE_K` | 2 | Backstory sections per reply. |
+| `COMPANION_LORE_MIN` | 0.5 | Relevance a section needs. |
+| `COMPANION_MEMORY_K` | 4 | Shared memories per reply. |
+| `COMPANION_MEMORY_MIN` | 0.45 | Relevance a memory needs. |
+| `COMPANION_GOSSIP_MIN` | 0.45 | Relevance a gossip line needs. |
+| `COMPANION_MAX_REPLY_CHARS` | 240 | Reply length cap (area chat). |
+| `COMPANION_EMBED_CACHE` | 5000 | Memory texts whose vectors are kept between calls. |
+
+Tests: `tests/test_companion.py`.
 
 ## How each step works
 
@@ -140,6 +185,8 @@ The game side is built (2026-09-25):
 - **The `/gm` panel** has a **Tutor NPC** tab: on/off, name, greeting, npc-rag health and the latest questions.
 
 The game server must be able to reach this machine on port 9092: run `ps\Register-NpcRagTasks.ps1 -AllowFrom <game server IP>`.
+
+**Two or more AI machines (2026-10-12):** the game server can load-balance several npc-rag nodes (`NPC_RAG_NODES` in its env, `server/ai-pool.mjs`). Install npc-rag on every machine the same way, with the same `NPC_API_KEY`, and run `Register-NpcRagTasks.ps1 -AllowFrom <game server>` on each. The game server sends `history` with every request, so npc-rag's built-in session memory is not used, and any node can answer any player. The current nodes are 47.51.162.106 and 192.168.1.188.
 
 ## Separate GM handbook assistant
 

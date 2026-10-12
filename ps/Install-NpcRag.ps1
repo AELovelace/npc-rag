@@ -33,7 +33,7 @@ if (-not (Test-Path ".venv\Scripts\python.exe")) {
 }
 $Venv = Join-Path $Root ".venv\Scripts\python.exe"
 & $Venv -m pip install --upgrade pip --quiet
-& $Venv -m pip install -r requirements.txt --quiet  # fastembed (CPU/ONNX), fastapi, uvicorn, httpx, numpy, pytest.
+& $Venv -m pip install -r requirements.txt --quiet  # fastembed (CPU/ONNX), fastapi, uvicorn, httpx, numpy, langgraph (companions), pytest.
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 # ── Settings file ─────────────────────────────────────────────────────────────

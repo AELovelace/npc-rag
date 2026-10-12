@@ -6,6 +6,7 @@ POST /v1/npc/chat is the front door: player message in, NPC reply out.
   3. generate  - Sakura's main model (9090) writes the reply from the persona + those sections
   4. guard     - replies that invent names or recite the rules are retried, then replaced (guard.py)
 POST /v1/search and /v1/reindex expose retrieval on its own.
+POST /v1/companion/chat and /v1/companion/lore serve the online companions (companion/router.py, a LangGraph pipeline).
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from .classifier import CLASSIFY_PROMPT, GAME, classify, parse_verdict
+from .classifier import CLASSIFY_PROMPT, GAME, GENERAL, Verdict, classify, parse_verdict
 from .common import Sessions, api_key_guard
 from .config import Settings
 from .guard import find_unsupported_terms, leaks_persona, retry_rule, select_hits, to_ascii
@@ -45,6 +46,8 @@ class ChatRequest(BaseModel):
     player_name: str | None = Field(default=None, max_length=64)
     npc_name: str | None = Field(default=None, max_length=32)       # Overrides NPC_NAME for this call.
     history: list[Turn] | None = Field(default=None, max_length=20) # Caller-managed memory; replaces the built-in one.
+    persona: str | None = Field(default=None, max_length=1500)      # Overrides data/persona.md for this call (companions speak as themselves).
+    category: Literal["game", "general", "chat"] | None = None      # Caller already classified the message: skip the 9091 step.
 
 
 class ClassifyRequest(BaseModel):
@@ -203,6 +206,10 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
             attempt_messages = [system, *messages[1:]]
         return None, "unsupported_terms"
 
+    from .companion.router import companion_router  # Companions share the classifier, wiki search and guarded generate.
+    app.include_router(companion_router(settings, state, search=search, classify_with_search=classify_with_search,
+                                        generate=generate))
+
     async def _chat(req: ChatRequest, message: str) -> dict:
         t0 = time.perf_counter()
         timings: dict[str, int] = {}
@@ -211,9 +218,14 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
         history = (_normalise_history(req.history, settings.session_turns) if req.history is not None
                    else sessions.get(req.player_id) if req.player_id else [])
 
-        # 1. Classify (the wiki fallback may already search; keep that result).
+        persona_text = (req.persona or "").strip() or state["persona"]  # A caller persona replaces Pip's for this reply only.
+
+        # 1. Classify (the wiki fallback may already search; keep that result). A caller verdict skips the model.
         cache: dict = {}
-        verdict = await classify_with_search(message, cache)
+        if req.category:
+            verdict = Verdict(GAME if req.category == "game" else GENERAL, "caller")  # "chat" is the game server's word for general.
+        else:
+            verdict = await classify_with_search(message, cache)
         timings["classify"] = int((time.perf_counter() - t0) * 1000)
 
         # 2. Retrieve for game questions. Short follow-ups borrow the previous question's words.
@@ -234,9 +246,9 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
         if verdict.category == GAME and not notes:
             reply, guard_verdict = unsure_reply(verdict.category, hits), "no_relevant_notes"
         else:
-            messages = build_messages(npc_name=npc_name, player_name=player_name, persona=state["persona"],
+            messages = build_messages(npc_name=npc_name, player_name=player_name, persona=persona_text,
                                       category=verdict.category, message=message, history=history, hits=notes)
-            persona = rules_text(npc_name=npc_name, player_name=player_name, persona=state["persona"])
+            persona = rules_text(npc_name=npc_name, player_name=player_name, persona=persona_text)  # The leak guard checks the persona actually used.
             sources = [m["content"] for m in messages] + [npc_name, player_name, *settings.guard_allowed_terms]
             try:
                 raw, guard_verdict = await generate(messages, persona, sources)

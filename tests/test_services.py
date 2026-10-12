@@ -90,6 +90,42 @@ def test_game_question_gets_wiki_notes(settings, embedder, index, llama, clf):
     assert body["sources"] and body["sources"][0]["url"].startswith("https://wiki.test/wiki/#/needs/")
 
 
+def test_caller_persona_replaces_pips(settings, embedder, index, llama, clf):
+    persona = "A patient, brave shield-bearer who guards her companions with a steady voice."
+    llama.replies = ["Visit the Cursebreaker, and stay behind my shield."]
+    with make_client(settings, embedder, index, llama, clf) as c:
+        body = c.post("/v1/npc/chat", json={"message": "how do I remove a cursed item", "npc_name": "Elowen",
+                                            "persona": persona}).json()
+    system = llama.requests[0]["messages"][0]["content"]
+    assert persona in system and "You are Elowen" in system  # The companion's own voice, not data/persona.md.
+    assert settings.persona_path.read_text(encoding="utf-8").strip() not in system
+    assert body["guard"] == "passed"
+
+
+def test_caller_persona_is_leak_guarded(settings, embedder, index, llama, clf):
+    persona = "A patient, brave shield-bearer who guards her companions with a steady voice and never leaves a friend behind."
+    llama.replies = ["Okay: a patient, brave shield-bearer who guards her companions with a steady voice and never leaves a friend behind."]
+    with make_client(settings, embedder, index, llama, clf) as c:
+        body = c.post("/v1/npc/chat", json={"message": "hello there friend", "persona": persona}).json()
+    assert body["guard"] == "leak_blocked" and body["reply"] == LEAK_REPLY  # Reciting the caller persona counts as a leak too.
+
+
+def test_caller_category_skips_the_classifier(settings, embedder, index, llama, clf):
+    llama.replies = ["Visit the Cursebreaker!", "Hi!"]
+    with make_client(settings, embedder, index, llama, clf) as c:
+        game = c.post("/v1/npc/chat", json={"message": "how do I remove a cursed item", "category": "game"}).json()
+        chat = c.post("/v1/npc/chat", json={"message": "how do I remove a cursed item", "category": "chat"}).json()
+    assert clf.requests == []  # Never asked 9091.
+    assert game["category"] == "game" and game["method"] == "caller" and game["sources"]
+    assert chat["category"] == "general" and chat["method"] == "caller" and chat["sources"] == []
+
+
+def test_persona_and_category_are_validated(settings, embedder, index, llama, clf):
+    with make_client(settings, embedder, index, llama, clf) as c:
+        assert c.post("/v1/npc/chat", json={"message": "hi", "persona": "x" * 1501}).status_code == 422
+        assert c.post("/v1/npc/chat", json={"message": "hi", "category": "smalltalk"}).status_code == 422
+
+
 def test_general_chat_has_no_notes(settings, embedder, index, llama, clf):
     with make_client(settings, embedder, index, llama, clf) as c:
         body = c.post("/v1/npc/chat", json={"message": "hello there friend"}).json()

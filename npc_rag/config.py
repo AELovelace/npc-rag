@@ -81,6 +81,15 @@ class Settings:
     session_turns: int           # Remembered messages per player (user + NPC lines).
     session_ttl: int             # Seconds of silence before a player's memory is forgotten.
 
+    # ── Companions (/v1/companion/*) ──────────────────────────────────────
+    companion_lore_k: int = 2             # Backstory sections shown per reply.
+    companion_lore_min: float = 0.5       # Section relevance below which it stays out of the prompt.
+    companion_memory_k: int = 4           # Shared memories shown per reply.
+    companion_memory_min: float = 0.45    # Memory relevance floor (bge-small scores unrelated text around 0.4).
+    companion_gossip_min: float = 0.45    # Anonymous gossip relevance floor.
+    companion_max_reply_chars: int = 240  # Companion lines appear in area chat: keep them short.
+    companion_embed_cache: int = 5000     # Memory texts whose vectors are kept between chats.
+
 
 def load_settings() -> Settings:
     """Build Settings from the environment, loading ROOT/.env first."""
@@ -119,4 +128,11 @@ def load_settings() -> Settings:
         max_message_chars=_env_int("MAX_MESSAGE_CHARS", 500),
         session_turns=_env_int("SESSION_TURNS", 6),
         session_ttl=_env_int("SESSION_TTL", 1800),
+        companion_lore_k=_env_int("COMPANION_LORE_K", 2),
+        companion_lore_min=_env_float("COMPANION_LORE_MIN", 0.5),
+        companion_memory_k=_env_int("COMPANION_MEMORY_K", 4),
+        companion_memory_min=_env_float("COMPANION_MEMORY_MIN", 0.45),
+        companion_gossip_min=_env_float("COMPANION_GOSSIP_MIN", 0.45),
+        companion_max_reply_chars=_env_int("COMPANION_MAX_REPLY_CHARS", 240),
+        companion_embed_cache=_env_int("COMPANION_EMBED_CACHE", 5000),
     )
