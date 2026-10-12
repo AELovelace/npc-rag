@@ -31,8 +31,14 @@ if (-not $port -and (Test-Path $envFile)) {
 }
 $port = if ($port) { [int]$port } else { 9092 }
 
+# Kill any old npc-rag ("python -m npc_rag serve", not the GM's gm-serve) so a restart picks up new code.
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+    Where-Object { $_.CommandLine -match 'npc_rag\s+serve' } |
+    ForEach-Object { Write-Host "Stopping old npc-rag (PID $($_.ProcessId))"; Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Start-Sleep -Seconds 2   # Give Windows a moment to release the port.
+
 $busy = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
-if ($busy) { Write-Host "Port $port already in use (PID $($busy[0].OwningProcess)); not starting." -ForegroundColor Yellow; return }
+if ($busy) { Write-Host "Port $port still in use (PID $($busy[0].OwningProcess)); not starting." -ForegroundColor Yellow; return }
 
 Start-Process -FilePath $Venv -ArgumentList "-m", "npc_rag", "serve" -WorkingDirectory $Root `
     -WindowStyle Hidden -RedirectStandardOutput "$Logs\npc-rag.out.log" -RedirectStandardError "$Logs\npc-rag.log"

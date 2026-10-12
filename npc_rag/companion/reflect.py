@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import re
 
+from ..bm25 import tokenize
 from ..guard import to_ascii
+from .prompts import SENSITIVE_STEMS
 
 IMPRESSIONS_PROMPT = """You read one exchange between a player and a game companion called {npc}, and note what the PLAYER said about themselves that {npc} should remember later: their likes and dislikes, feelings, plans, nicknames they like, things they are proud of or worried about.
 Ignore questions about the game, requests, instructions, anything about {npc}, and anything about other people.
@@ -21,6 +23,8 @@ Output JSON only, in this shape: {{"facts": [{{"text": "...", "importance": 1}}]
 SUMMARY_PROMPT = """You are {npc}, a companion character in an online RPG, writing a private note to yourself about your relationship with {player}.
 Merge your previous note and the memories below into one new note of at most 3 sentences (under 70 words), in the first person ("I", "we").
 Keep what matters most: how close you are, what you went through together, and what {player} told you about themselves.
+Leave out accidents, diaper changes, defeats and any other embarrassing moments: this note may be read in public.
+Call {player} by name; don't guess their pronouns.
 Plain text only, no lists or headings."""
 
 _OBJECT = re.compile(r"\{.*\}", re.S)
@@ -55,7 +59,8 @@ def parse_impressions(text: str, player: str, limit: int = 3) -> list[dict]:
             importance = int(fact.get("importance", 1)) if isinstance(fact, dict) else 1
         except (TypeError, ValueError):
             importance = 1
-        out.append({"text": line, "importance": max(1, min(3, importance))})
+        embarrassing = any(w.startswith(SENSITIVE_STEMS) for w in tokenize(line))  # "Doll said she wet herself": private, like an accident memory.
+        out.append({"text": line, "importance": max(1, min(3, importance)), "embarrassing": embarrassing})
         if len(out) >= limit:
             break
     return out

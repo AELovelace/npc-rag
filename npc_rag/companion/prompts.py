@@ -78,14 +78,34 @@ def build_messages(*, name: str, player: str, persona: str, voice: list[str], au
     return [{"role": "system", "content": system}, *history, {"role": "user", "content": message}]
 
 
-def mentions(reply: str, memory: str, ignore: set[str]) -> bool:
-    """True when the reply clearly talks about this memory: it shares enough of the memory's meaningful words.
+# Words that make a line embarrassing. A slip only counts when the reply says one of these (by prefix), so "you slipped
+# on the moss in the Forest" never charges Dignity for an accident memory that merely shares the place name.
+SENSITIVE_STEMS = ("accident", "mishap", "incident", "wet", "soak", "puddle", "leak", "mess", "diaper", "nappy", "padding",
+                   "pad", "change", "potty", "toilet", "pee", "poop", "pants", "embarrass", "humiliat", "smell", "stink",
+                   "dribbl", "trickl", "squish", "crinkl", "pullup", "pull-up")
+# Common words that say nothing about which memory is meant (on top of the BM25 stopwords).
+GENERIC = frozenset("were while together have been they them then this that there about after before just again little "
+                    "really very some still also into over back time last like know remember during always never once "
+                    "where when every much more than here other another first".split())
 
-    Used to confirm a slip really happened before the game server charges Dignity for it.
+
+def _sensitive(word: str) -> bool:
+    return word.startswith(SENSITIVE_STEMS)
+
+
+def mentions(reply: str, memory: str, ignore: set[str]) -> bool:
+    """True when the reply clearly brings up this embarrassing memory: it uses an embarrassing word AND shares
+    something specific with the memory (a place, an enemy, the event itself).
+
+    Used to confirm a slip really happened before the game server charges Dignity for it, so it errs on the side of
+    "no": a vague or reinterpreted line costs the player nothing.
     """
-    words = {w for w in tokenize(memory) if len(w) >= 4 and w not in ignore}  # Names (the player's, the companion's) never count.
+    said = {w for w in tokenize(reply) if w not in GENERIC}
+    if not any(_sensitive(w) for w in said):
+        return False                                           # Nothing embarrassing was actually said.
+    words = {w for w in tokenize(memory) if len(w) >= 4 and w not in ignore and w not in GENERIC}  # Names never count.
     if not words:
         return False
-    said = set(tokenize(reply))
-    need = max(1, min(3, math.ceil(0.3 * len(words))))
-    return len(words & said) >= need
+    shared = words & said
+    need = max(1, min(2, math.ceil(0.25 * len(words))))
+    return len(shared) >= need

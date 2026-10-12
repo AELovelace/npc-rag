@@ -166,9 +166,9 @@ def test_impressions_are_framed_as_what_the_player_said(loose, embedder, index, 
     with make_client(loose, embedder, index, llama, clf) as c:
         body = c.post("/v1/companion/impressions", json={"npc_name": "Elowen", "player_name": "Doll",
                                                          "message": "I love strawberry milk and I'm scared of the dark", "reply": "Noted."}).json()
-        assert body["facts"] == [{"text": "Doll said she loves strawberry milk.", "importance": 2},
-                                 {"text": "Doll said: she is afraid of the dark", "importance": 3},
-                                 {"text": "Doll said hi there friend", "importance": 1}]       # Capped at 3, clamped, always "Doll said".
+        assert body["facts"] == [{"text": "Doll said she loves strawberry milk.", "importance": 2, "embarrassing": False},
+                                 {"text": "Doll said: she is afraid of the dark", "importance": 3, "embarrassing": False},
+                                 {"text": "Doll said hi there friend", "importance": 1, "embarrassing": False}]  # Capped at 3, clamped, always "Doll said".
         assert "Output JSON only" in llama.requests[0]["messages"][0]["content"] and llama.requests[0]["temperature"] == 0.0
         assert c.post("/v1/companion/impressions", json={"npc_name": "Elowen", "player_name": "Doll", "message": "hi"}).json() == {"facts": []}
         assert c.post("/v1/companion/impressions", json={"npc_name": "Elowen", "player_name": "Doll", "message": "hi"}).status_code == 503
@@ -184,3 +184,26 @@ def test_summaries_merge_memories_in_first_person(loose, embedder, index, llama,
         assert "Previous note: We just met." in user and "- Doll said she loves strawberry milk." in user
         assert c.post("/v1/companion/summarize", json={"npc_name": "Elowen", "player_name": "Doll", "memories": ["x"]}).status_code == 503
         assert c.post("/v1/companion/summarize", json={"npc_name": "Elowen", "player_name": "Doll", "memories": []}).status_code == 422
+
+
+def test_slip_detection_needs_an_embarrassing_word_and_a_shared_detail():
+    """Live run 2026-10-12: "you slipped on the moss in the Forest" was wrongly counted as an accident slip."""
+    from npc_rag.companion.prompts import mentions
+    memory, names = "Doll had an accident in the Forest while we were traveling together.", {"doll", "dame", "elowen"}
+    assert not mentions("Doll, you were the one who slipped on the moss last time in the Forest.", memory, names)
+    assert not mentions("The Forest is lovely this time of year, we were there together.", memory, names)
+    assert not mentions("Did you remember to change your diaper? Let's head home.", memory, names)  # Embarrassing, but not this memory.
+    assert mentions("Remember your little accident in the Forest, Doll?", memory, names)
+    assert mentions("You had a little mishap in the Forest, but I made sure no one saw it.", memory, names)
+
+
+def test_summary_prompt_keeps_embarrassing_moments_out_and_avoids_pronouns():
+    from npc_rag.companion.reflect import summary_messages
+    system = summary_messages(npc="Elowen", player="Doll", summary="", memories=["x"])[0]["content"]
+    assert "Leave out accidents" in system and "may be read in public" in system and "don't guess their pronouns" in system
+
+
+def test_embarrassing_impressions_are_flagged():
+    from npc_rag.companion.reflect import parse_impressions
+    facts = parse_impressions('{"facts": [{"text": "Doll said they need help changing their diaper."}, {"text": "Doll said they love tea."}]}', "Doll")
+    assert [f["embarrassing"] for f in facts] == [True, False]
