@@ -148,6 +148,9 @@ Tests: `tests/test_companion.py`.
   of a reply's time on our cards.
 - **Companions get the top `COMPANION_NOTE_K` (2) wiki notes, cut to `COMPANION_NOTE_WORDS` (120),** and generate at
   most `COMPANION_MAX_TOKENS` (100). Pip is unchanged.
+- **Banter prompt (phase D):** it says not to repeat example lines or the partner's words, and gives topics (their
+  past, the place). A live run on 2026-10-13 had Wick reciting a voice line and Sable parroting her before this
+  change.
 - **`LLM_URL` may list several model copies** (`http://127.0.0.1:9090,http://127.0.0.1:9091`, e.g. one per graphics
   card). Each reply goes to the least busy copy and skips one that fails.
 

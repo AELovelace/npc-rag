@@ -71,8 +71,10 @@ BANTER_MODE = """
 
 Another companion, {partner}, is standing near you.
 About them: {partner_persona}
-{partner_line}- Speak to {partner}, not to the players: one short sentence, in character.
-- Only use your own past and what {partner} said; never mention the players' private moments."""
+{partner_line}- Speak to {partner}, not to the players: one or two short sentences, in character.
+- Say something new: never repeat your example lines, and never copy {partner}'s words. Answer from your own life, not theirs.
+- Good topics: ask {partner} something about their past, compare your stories, or remark on where you are right now.
+- Only use your own past, what {partner} said, and what you notice; never mention the players' private moments."""
 
 # What the model sees as the "user" turn when nobody actually spoke.
 CUES = {"reaction": "(React out loud.)", "musing": "(Say something on your own.)", "banter": "(Speak to them.)"}
