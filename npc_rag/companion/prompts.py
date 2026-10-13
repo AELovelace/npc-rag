@@ -52,13 +52,15 @@ This is casual conversation. Chat back warmly and briefly as {name}.
 - Never invent other game facts: no places, people, gods, items, rules or prices that aren't mentioned above."""
 
 EMOTE_MODE = CHAT_MODE + """
-- {player} did something instead of speaking (their message describes an action). React to what they did, in character."""
+- {player} did something instead of speaking: the message between asterisks is their action, not words.
+- Respond to that specific action (if they hug you, you are being hugged), in character. Don't just say one of your usual lines."""
 
 REACTION_MODE = """
 
 Nobody spoke to you: something just happened, and you react out loud on your own.
 What happened: {about}
 - One or two short sentences, in character, said to {player}.
+- Name what happened (who you beat, what you finished, where you are) so it is clearly about this moment.
 - Never invent other game facts: no places, people, items or rules that aren't mentioned above."""
 
 MUSING_MODE = """
@@ -183,3 +185,20 @@ def mentions(reply: str, memory: str, ignore: set[str], player: str = "") -> boo
     shared = words & said
     need = max(1, min(2, math.ceil(0.25 * len(words))))
     return len(shared) >= need
+
+
+def _grams(text: str, n: int) -> set[tuple[str, ...]]:
+    w = re.findall(r"[a-z']+", text.lower())
+    return {tuple(w[i:i + n]) for i in range(len(w) - n + 1)}
+
+
+def copied(reply: str, voice: list[str], partner_line: str = "") -> str | None:
+    """What the reply copied, if anything: one of the companion's example lines (7 words in a row) or the banter
+    partner's line (5 words in a row). Small models ignore "don't repeat" in the prompt (continuity test 2026-10-13:
+    Rosalind answered a hug with her voice line, Sable parroted Wick), so the graph checks in code and retries once."""
+    mine = _grams(reply, 7)
+    if any(mine & _grams(line, 7) for line in voice):
+        return "one of your example lines"
+    if partner_line and _grams(reply, 5) & _grams(partner_line, 5):
+        return "what they just said"
+    return None

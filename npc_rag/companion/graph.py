@@ -26,7 +26,7 @@ from langgraph.graph import END, START, StateGraph
 from ..classifier import GAME, GENERAL, Verdict
 from ..guard import select_hits, to_ascii
 from ..prompts import tidy_reply, unsure_reply
-from .prompts import build_messages, mentions, rules_text
+from .prompts import build_messages, copied, mentions, rules_text
 
 FOLLOW_UP_WORDS = 5  # Same as Pip: a short follow-up is searched together with the previous question.
 
@@ -152,6 +152,13 @@ def build_companion_graph(settings, state: dict, *, search, classify_with_search
         t0 = time.perf_counter()
         sources = [m["content"] for m in s["messages"]] + [s["npc_name"], s["player_name"], *settings.guard_allowed_terms]
         raw, verdict = await generate(s["messages"], s["rules"], sources, settings.companion_max_tokens)  # LLMError propagates: 503, the pool fails over.
+        req = s["req"]
+        what = copied(raw or "", list(req.voice), req.partner.line if req.partner else "") if raw and verdict.startswith("passed") else None
+        if what:  # One retry with the copy named; keep the first reply if the retry fails the guard.
+            note = {**s["messages"][0], "content": s["messages"][0]["content"] + f"\nYour last reply repeated {what}. Say something new in your own words."}
+            raw2, verdict2 = await generate([note, *s["messages"][1:]], s["rules"], sources, settings.companion_max_tokens)
+            if raw2 and verdict2.startswith("passed"):
+                raw, verdict = raw2, "passed_after_retry"
         return {"raw": raw, "guard": verdict, "timings": {"generate": _ms(t0)}}
 
     async def finish(s: CompanionState) -> dict:

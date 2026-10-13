@@ -78,7 +78,7 @@ def test_persona_voice_and_lore_names_pass_the_guard(loose, embedder, index, lla
         body = ask(c, message="who trained you in the monastery").json()
     system = system_of(llama)
     assert "You are Elowen" in system and ELOWEN["persona"] in system and "Stay behind me" in system
-    assert body["guard"] == "passed"     # Copying a voice example is not a leak, and Aldric comes from the lore.
+    assert body["guard"] in ("passed", "passed_after_retry")  # Copying a voice example is not a leak (the copy guard may retry), and Aldric comes from the lore.
     assert body["category"] == "general" and body["method"] == "llm"
 
 
@@ -305,3 +305,18 @@ def test_llm_pool_spreads_over_copies_and_skips_a_dead_one():
     asyncio.run(run())
     assert isinstance(make_llm("http://127.0.0.1:9090"), LlamaClient)
     assert isinstance(make_llm("http://127.0.0.1:9090, http://127.0.0.1:9091"), LlamaPool)
+
+
+def test_copied_lines_are_retried_once(loose, embedder, index, llama, clf):
+    """Continuity test 2026-10-13 (Qwen3-4B): a hug got the voice line back; banter parroted the partner."""
+    from npc_rag.companion.prompts import copied
+    voice = ["Come here little one, let Matron check your padding~"]
+    assert copied("Come here little one, let Matron check your padding~ How sweet.", voice) == "one of your example lines"
+    assert copied("You're standing too close to the edge, Sable.", [], "You're standing too close to the edge, Wick.") == "what they just said"
+    assert copied("A brand new thought.", voice, "Something else entirely.") is None
+    llama.replies = ["Come here little one, let Matron check your padding~", "Oh! A hug? Come here, dear, Matron hugs back."]
+    with make_client(loose, embedder, index, llama, clf) as c:
+        body = c.post("/v1/companion/chat", json={**ELOWEN, "npc_id": "matron_haven", "npc_name": "Rosalind", "voice": voice,
+                                                  "message": "*Doll hugs Rosalind*", "kind": "emote"}).json()
+    assert body["reply"] == "Oh! A hug? Come here, dear, Matron hugs back." and body["guard"] == "passed_after_retry"
+    assert "repeated one of your example lines" in llama.requests[1]["messages"][0]["content"]

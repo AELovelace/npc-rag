@@ -148,6 +148,10 @@ Tests: `tests/test_companion.py`.
   of a reply's time on our cards.
 - **Companions get the top `COMPANION_NOTE_K` (2) wiki notes, cut to `COMPANION_NOTE_WORDS` (120),** and generate at
   most `COMPANION_MAX_TOKENS` (100). Pip is unchanged.
+- **Copy guard (2026-10-13):** small models ignore "don't repeat". In the continuity test, Qwen3-4B answered a hug with
+  a voice line and parroted a banter partner. The graph now checks the reply in code: 7 words in a row from a voice
+  example, or 5 from the partner's line, trigger one retry that names the copy. Emote and reaction prompts also
+  spell out "respond to that action" and "name what happened".
 - **Banter prompt (phase D):** it says not to repeat example lines or the partner's words, and gives topics (their
   past, the place). A live run on 2026-10-13 had Wick reciting a voice line and Sable parroting her before this
   change.
