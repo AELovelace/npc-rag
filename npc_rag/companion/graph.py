@@ -70,7 +70,9 @@ def build_companion_graph(settings, state: dict, *, search, classify_with_search
     async def classify(s: CompanionState) -> dict:
         t0 = time.perf_counter()
         req, cache = s["req"], {}
-        if req.category:
+        if req.kind != "chat":
+            verdict = Verdict(GENERAL, "kind")                     # Emotes, reactions, musings and banter are never game questions.
+        elif req.category:
             verdict = Verdict(GAME if req.category == "game" else GENERAL, "caller")  # The game server already knows.
         else:
             verdict = await classify_with_search(s["message"], cache)
@@ -85,7 +87,8 @@ def build_companion_graph(settings, state: dict, *, search, classify_with_search
         query = f"{last_user} {message}" if last_user and len(message.split()) < FOLLOW_UP_WORDS else message
         result = s["cache"].get("search") if query == message else None
         hits = (result or await search(query, settings.top_k))["results"]
-        notes = select_hits(hits, settings.min_relevance, settings.guard_keep_margin, settings.top_k, settings.guard_min_words)
+        notes = select_hits(hits, settings.min_relevance, settings.guard_keep_margin, settings.companion_note_k, settings.guard_min_words)
+        notes = [{**n, "text": " ".join(n["text"].split()[: settings.companion_note_words])} for n in notes]  # Shorter prompts read faster.
         return {"notes": notes, "hits": hits, "timings": {"retrieve": _ms(t0)}}
 
     async def embed(s: CompanionState) -> dict:
@@ -129,13 +132,15 @@ def build_companion_graph(settings, state: dict, *, search, classify_with_search
 
     async def compose(s: CompanionState) -> dict:
         req = s["req"]
-        slip = {"id": req.slip.id, "text": req.slip.text} if req.slip and req.audience > 0 else None  # A slip needs listeners.
+        slip = {"id": req.slip.id, "text": req.slip.text} if req.slip and req.audience > 0 and req.kind != "banter" else None  # A slip needs listeners.
         persona = req.persona.strip() or f"{s['npc_name']} is a loyal adventuring companion."
         messages = build_messages(
             name=s["npc_name"], player=s["player_name"], persona=persona, voice=list(req.voice), audience=req.audience,
             category=s["category"], message=s["message"], history=s["history"], notes=s["notes"],
             lore=[sec for sec, _ in s["lore"]], summary=req.summary.strip(), memories=[m["text"] for m in s["memories"]],
-            gossip=[s["gossip"]["text"]] if s["gossip"] else [], slip=slip["text"] if slip else None)
+            gossip=[s["gossip"]["text"]] if s["gossip"] else [], slip=slip["text"] if slip else None,
+            kind=req.kind, situation=list(req.situation), about=req.about.strip(),
+            partner=req.partner.model_dump() if req.partner else None)
         rules = rules_text(name=s["npc_name"], player=s["player_name"], persona=persona, audience=req.audience)
         return {"messages": messages, "rules": rules, "slip": slip}
 
@@ -146,7 +151,7 @@ def build_companion_graph(settings, state: dict, *, search, classify_with_search
     async def run_generate(s: CompanionState) -> dict:
         t0 = time.perf_counter()
         sources = [m["content"] for m in s["messages"]] + [s["npc_name"], s["player_name"], *settings.guard_allowed_terms]
-        raw, verdict = await generate(s["messages"], s["rules"], sources)  # LLMError propagates: the router answers 503 so the pool fails over.
+        raw, verdict = await generate(s["messages"], s["rules"], sources, settings.companion_max_tokens)  # LLMError propagates: 503, the pool fails over.
         return {"raw": raw, "guard": verdict, "timings": {"generate": _ms(t0)}}
 
     async def finish(s: CompanionState) -> dict:

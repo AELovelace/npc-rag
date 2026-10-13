@@ -89,13 +89,16 @@ class Settings:
     companion_gossip_min: float = 0.45    # Anonymous gossip relevance floor.
     companion_max_reply_chars: int = 240  # Companion lines appear in area chat: keep them short.
     companion_embed_cache: int = 5000     # Memory texts whose vectors are kept between chats.
+    companion_max_tokens: int = 100       # Generation cap for companions (replies are cut to 240 characters anyway).
+    companion_note_k: int = 2             # Wiki notes a companion's game answer may use (Pip keeps RAG_TOP_K).
+    companion_note_words: int = 120       # Each companion note is cut to this many words: prompt reading is most of a reply's time.
 
 
 def load_settings() -> Settings:
     """Build Settings from the environment, loading ROOT/.env first."""
     _load_dotenv(ROOT / ".env")
     return Settings(
-        llm_url=_env("LLM_URL", "http://127.0.0.1:9090").rstrip("/"),
+        llm_url=_env("LLM_URL", "http://127.0.0.1:9090").rstrip("/"),  # A comma list spreads replies over several copies (llm.make_llm).
         classifier_url=_env("CLASSIFIER_URL", "http://127.0.0.1:9091").rstrip("/"),
         host=_env("NPC_HOST", "0.0.0.0"),
         port=_env_int("NPC_PORT", 9092),
@@ -135,4 +138,7 @@ def load_settings() -> Settings:
         companion_gossip_min=_env_float("COMPANION_GOSSIP_MIN", 0.45),
         companion_max_reply_chars=_env_int("COMPANION_MAX_REPLY_CHARS", 240),
         companion_embed_cache=_env_int("COMPANION_EMBED_CACHE", 5000),
+        companion_max_tokens=_env_int("COMPANION_MAX_TOKENS", 100),
+        companion_note_k=_env_int("COMPANION_NOTE_K", 2),
+        companion_note_words=_env_int("COMPANION_NOTE_WORDS", 120),
     )

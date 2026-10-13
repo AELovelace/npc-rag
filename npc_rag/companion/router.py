@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -44,6 +44,12 @@ class GossipIn(BaseModel):
     text: str = Field(min_length=1, max_length=400)          # Already anonymous: written from templates on the game server.
 
 
+class PartnerIn(BaseModel):
+    name: str = Field(min_length=1, max_length=32)
+    persona: str = Field(default="", max_length=600)
+    line: str = Field(default="", max_length=300)               # What the partner just said (empty: start the exchange).
+
+
 class CompanionChatRequest(BaseModel):
     message: str = Field(min_length=1)
     npc_id: str = Field(min_length=1, max_length=64)          # followers-data.json key; selects the lore.
@@ -61,6 +67,10 @@ class CompanionChatRequest(BaseModel):
     gossip: list[GossipIn] = Field(default_factory=list, max_length=5)
     audience: int = Field(default=0, ge=0, le=500)          # Other players in earshot, not counting the speaker.
     slip: MemoryIn | None = None                              # Embarrassing memory the game server rolled to let slip.
+    kind: Literal["chat", "emote", "reaction", "musing", "banter"] = "chat"  # COMPANION_LIFELIKE_PLAN.md: who started this line.
+    situation: list[Annotated[str, Field(max_length=160)]] = Field(default_factory=list, max_length=10)  # Short word facts ("badly hurt").
+    about: str = Field(default="", max_length=300)            # reaction: what just happened.
+    partner: PartnerIn | None = None                          # banter: the other companion.
 
 
 class ImpressionsRequest(BaseModel):

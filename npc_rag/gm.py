@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .common import api_key_guard
 from .config import load_settings, _env, _env_int, _env_float, _path
 from .index import WikiIndex
-from .llm import LlamaClient, LLMError
+from .llm import LlamaClient, make_llm, LLMError
 from .wiki import load_pages, inline_text, slugify
 
 
@@ -109,7 +109,7 @@ def create_gm_app(settings, *, embedder=None, index=None, llm=None):
                     raise ValueError("GM corpus changed; rebuild it")
             except (FileNotFoundError, ValueError):
                 index = await asyncio.to_thread(build_gm_index, settings, embedder)
-        llm = llm or LlamaClient(settings.llm_url, settings.llm_model, settings.llm_api_key, settings.llm_concurrency)
+        llm = llm or make_llm(settings.llm_url, settings.llm_model, settings.llm_api_key, settings.llm_concurrency)
         yield
         await llm.aclose()
 

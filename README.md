@@ -135,6 +135,22 @@ Settings (`.env`):
 
 Tests: `tests/test_companion.py`.
 
+**Kinds and speed (2026-10-13, COMPANION_LIFELIKE_PLAN.md phase A).**
+- **`kind` on `/v1/companion/chat`:**
+  - `chat` (default) and `emote`: the player did something rather than said it.
+  - `reaction`: uses `about`, what just happened.
+  - `musing`: nobody spoke.
+  - `banter`: `partner = {name, persona, line}`. It never carries player memories, gossip or slips.
+  - Non-chat kinds skip the classifier.
+  - `situation` (up to 10 short facts) adds a "What you notice right now" block.
+- **Prompt order is cache-friendly.** The companion's static block (persona, voice, rules) comes first and never
+  contains the player or the audience, so llama.cpp reuses its cached prompt between players. Prompt reading is most
+  of a reply's time on our cards.
+- **Companions get the top `COMPANION_NOTE_K` (2) wiki notes, cut to `COMPANION_NOTE_WORDS` (120),** and generate at
+  most `COMPANION_MAX_TOKENS` (100). Pip is unchanged.
+- **`LLM_URL` may list several model copies** (`http://127.0.0.1:9090,http://127.0.0.1:9091`, e.g. one per graphics
+  card). Each reply goes to the least busy copy and skips one that fails.
+
 ## How each step works
 
 **Classifier** (`npc_rag/classifier.py`). The model on `CLASSIFIER_URL` gets a short instruction and answers GAME or CHAT (4 tokens, temperature 0). From the development PC, Llama-3.2-3B on MONOLITH-III classified 96.2% of the 80 held-out messages in `data/eval_messages.json` correctly, taking about 0.6 s each. If the model is down, times out (`CLASSIFIER_TIMEOUT`) or answers something else, a best wiki score of `RAG_GAME_EVIDENCE` (0.66) or more makes the message a game question, and anything lower counts as chat. Measure accuracy with `python -m npc_rag eval`, or `eval --wiki-only` for the fallback alone.

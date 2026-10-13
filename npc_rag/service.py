@@ -24,7 +24,7 @@ from .common import Sessions, api_key_guard
 from .config import Settings
 from .guard import find_unsupported_terms, leaks_persona, retry_rule, select_hits, to_ascii
 from .index import WikiIndex
-from .llm import LlamaClient, LLMError
+from .llm import LlamaClient, LLMError, make_llm
 from .prompts import (LEAK_REPLY, build_messages, clean_name, fallback_reply, rules_text, tidy_reply,
                       unsure_reply)
 from .wiki import load_pages
@@ -102,7 +102,7 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
             state["embedder"] = Embedder(settings.embed_model, settings.embed_cache, settings.embed_threads)
         if state["index"] is None:
             state["index"] = await asyncio.to_thread(load_or_build, settings, state["embedder"])
-        state["llm"] = llm or LlamaClient(settings.llm_url, settings.llm_model, settings.llm_api_key,
+        state["llm"] = llm or make_llm(settings.llm_url, settings.llm_model, settings.llm_api_key,
                                           settings.llm_concurrency)
         state["classifier"] = classifier_llm or LlamaClient(settings.classifier_url, settings.classifier_model,
                                                             settings.llm_api_key, settings.llm_concurrency)
@@ -186,14 +186,14 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
             if pid:
                 in_flight.discard(pid)
 
-    async def generate(messages: list[dict], persona: str, sources: list[str]) -> tuple[str | None, str]:
+    async def generate(messages: list[dict], persona: str, sources: list[str], max_tokens: int | None = None) -> tuple[str | None, str]:
         """Ask the model, check the reply, retry once if it names unsupported things.
 
         Returns (raw reply or None, guard verdict). None means the reply was rejected.
         """
         attempt_messages = messages
         for attempt in range(settings.guard_retries + 1):
-            raw = await state["llm"].chat(attempt_messages, max_tokens=settings.max_tokens,
+            raw = await state["llm"].chat(attempt_messages, max_tokens=max_tokens or settings.max_tokens,
                                           temperature=settings.temperature if attempt == 0 else RETRY_TEMPERATURE,
                                           timeout=settings.llm_timeout)
             if leaks_persona(raw, persona):

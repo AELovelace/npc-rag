@@ -223,3 +223,85 @@ def test_summaries_drop_embarrassing_sentences_in_code():
     from npc_rag.companion.reflect import tidy_summary
     text = tidy_summary("We beat the Slime Knight, even after the accident. Doll told me she loves strawberry milk. We are close.")
     assert text == "Doll told me she loves strawberry milk. We are close."
+
+
+# ── Phase A (COMPANION_LIFELIKE_PLAN.md): cacheable prompts, kinds, situation, token cap, trimmed notes, model pool ──
+
+def test_prompt_starts_with_a_static_block_shared_by_every_player(loose, embedder, index, llama, clf):
+    with make_client(loose, embedder, index, llama, clf) as c:
+        ask(c, message="hello Elowen", player_name="Doll", audience=0)
+        ask(c, message="how do I remove a cursed item", player_name="Bea", audience=3)
+    a, b = system_of(llama, 0), system_of(llama, 1)
+    shared = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), min(len(a), len(b)))
+    assert "Keep everything friendly and non-sexual." in a[:shared] and a[:shared].endswith("with a player named ")  # Everything up to the name is identical.
+    assert "named Doll" not in a[:shared] and "Right now you are with a player named Doll" in a  # ("Doll" alone is in "LiDollQuest".)
+
+
+def test_companion_replies_use_the_companion_token_cap(loose, embedder, index, llama, clf):
+    with make_client(dataclasses.replace(loose, companion_max_tokens=77), embedder, index, llama, clf) as c:
+        ask(c)
+    assert llama.requests[0]["max_tokens"] == 77
+
+
+def test_companion_game_notes_are_fewer_and_shorter(loose, embedder, index, llama, clf):
+    tight = dataclasses.replace(loose, companion_note_k=1, companion_note_words=5)
+    with make_client(tight, embedder, index, llama, clf) as c:
+        ask(c, message="how do I remove a cursed item", category="game")
+    notes = system_of(llama).split("Guidebook notes:")[1]
+    assert notes.count("[") == 1 and len(notes.split("\n", 2)[2].split()) <= 5
+
+
+def test_kinds_change_the_mode_and_skip_the_classifier(loose, embedder, index, llama, clf):
+    partner = {"name": "Wick", "persona": "A thoughtful former cultist.", "line": "Have you seen the desert?"}
+    with make_client(loose, embedder, index, llama, clf) as c:
+        emote = ask(c, message="*Doll hugs Elowen*", kind="emote").json()
+        react = ask(c, message="won a boss fight", kind="reaction", about="We just beat the Ember Wyrm together.").json()
+        muse = ask(c, message="idle", kind="musing", situation=["in Honeydew Village, a safe town", "it is evening"],
+                   memories=[{"id": "m1", "text": "Doll and I beat the Slime Knight."}]).json()
+        banter = ask(c, message="banter", kind="banter", partner=partner, audience=2,
+                     memories=[{"id": "m1", "text": "Doll and I beat the Slime Knight."}],
+                     slip={"id": "s", "text": "Doll had an accident.", "embarrassing": True}).json()
+    assert clf.requests == [] and all(r["method"] == "kind" for r in (emote, react, muse, banter))
+    assert "did something instead of speaking" in system_of(llama, 0)
+    assert "What happened: We just beat the Ember Wyrm together." in system_of(llama, 1)
+    assert llama.requests[1]["messages"][-1]["content"] == "(React out loud.)"
+    assert "What you notice right now" in system_of(llama, 2) and "it is evening" in system_of(llama, 2)
+    assert "say one short thing on your own" in system_of(llama, 2)
+    banter_system = system_of(llama, 3)
+    assert 'They just said to you: "Have you seen the desert?"' in banter_system and "Slime Knight" not in banter_system
+    assert "teasing" not in banter_system and banter["slip"] is None, "banter never carries player memories or slips"
+
+
+def test_situation_and_partner_are_validated(loose, embedder, index, llama, clf):
+    with make_client(loose, embedder, index, llama, clf) as c:
+        assert ask(c, situation=["x" * 161]).status_code == 422
+        assert ask(c, situation=["fact"] * 11).status_code == 422
+        assert ask(c, kind="gossiping").status_code == 422
+        assert ask(c, kind="banter", partner={"name": ""}).status_code == 422
+
+
+def test_llm_pool_spreads_over_copies_and_skips_a_dead_one():
+    import asyncio
+    import httpx
+    from npc_rag.llm import LlamaClient, LlamaPool, make_llm
+    seen = []
+
+    def copy(name, fail=False):
+        async def handler(request):
+            await asyncio.sleep(0.02)                          # A real server takes time, so concurrent calls overlap.
+            seen.append(name)
+            if fail:
+                return httpx.Response(500, json={})
+            return httpx.Response(200, json={"choices": [{"message": {"content": "from " + name}}]})
+        return LlamaClient("http://" + name, transport=httpx.MockTransport(handler))
+
+    async def run():
+        pool = LlamaPool([copy("a"), copy("b")])
+        replies = await asyncio.gather(*(pool.chat([{"role": "user", "content": "hi"}], max_tokens=5, temperature=0, timeout=5) for _ in range(4)))
+        assert {"from a", "from b"} <= set(replies), "concurrent calls use both copies"
+        broken = LlamaPool([copy("dead", fail=True), copy("alive")])
+        assert await broken.chat([{"role": "user", "content": "hi"}], max_tokens=5, temperature=0, timeout=5) == "from alive"
+        await pool.aclose(); await broken.aclose()
+    asyncio.run(run())
+    assert isinstance(make_llm("http://127.0.0.1:9090"), LlamaClient)
+    assert isinstance(make_llm("http://127.0.0.1:9090, http://127.0.0.1:9091"), LlamaPool)
