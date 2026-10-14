@@ -164,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
 
     serve = sub.add_parser("serve", help="run the service on NPC_PORT (default 9092)")
     serve.add_argument("--env-file", help="optional alternate environment file; defaults to .env")  # No secrets enter process arguments.
+    sub.add_parser("devices", help="list native GPU names/descriptions without loading classifier weights")
 
     se = sub.add_parser("search", help="search the local index from the command line")
     se.add_argument("query")
@@ -191,6 +192,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("gm-serve", help="run the staff handbook service on GM_PORT (9093)")
 
     args = p.parse_args(argv)
+    if args.cmd == "devices":
+        from .decider_devices import detect_devices
+        print(json.dumps({"devices": detect_devices()}, indent=2))
+        return 0  # Diagnostic works independently of .env and does not start the RAG service.
     if args.cmd == "eval" and (args.raw_model and args.wiki_only or not 0 <= args.min_class_accuracy <= 1):
         p.error("eval needs a threshold from 0 to 1; --raw-model and --wiki-only cannot be combined")
     if args.cmd.startswith("gm-"):

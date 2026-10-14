@@ -117,8 +117,9 @@ class Settings:
     classifier_backend: str = "llamacpp"  # Existing HTTP classifier or in-process Decider GGUF scoring.
     decider_model: str = "lidoll/decider0-1"  # Managed release alias, Hugging Face repo ID or local model directory.
     decider_gguf_file: str = "decider0-1.gguf"  # The managed alias always uses its pinned filename.
-    decider_threads: int = 4             # CPU threads for the single native inference worker.
+    decider_threads: int = 4             # CPU threads per native inference worker.
     decider_gpu_layers: int = 0          # CPU by default; -1 offloads all layers with a compatible build.
+    decider_gpu_devices: str = "auto"    # GPU mode: one worker per detected card, or explicit CUDA0,Vulkan0 names.
     decider_context: int = 4096          # Entire prompt capacity, including the decision instructions.
     rag_keyword_coverage: float = 0.5    # Share of a message's meaningful words one wiki chunk must hold for the keyword rule; above 1 disables it.
     rag_keyword_dense: float = 0.62      # Wiki score the keyword rule still requires (below RAG_GAME_EVIDENCE, above unrelated chat).
@@ -132,6 +133,10 @@ class Settings:
             raise ValueError("DECIDER_THREADS must be 1-64 and DECIDER_GPU_LAYERS must be -1 through 256")
         if not 2048 <= self.decider_context <= 32768:
             raise ValueError("DECIDER_CONTEXT must be 2048-32768 tokens")
+        devices = self.decider_gpu_devices.split(",")
+        if (not all(d.strip() and d == d.strip() for d in devices) or len(set(devices)) != len(devices)
+                or ("auto" in devices and len(devices) != 1)):
+            raise ValueError("DECIDER_GPU_DEVICES must be auto or a comma-separated list of unique device names")
         if not (math.isfinite(self.rag_keyword_coverage) and math.isfinite(self.rag_keyword_dense)
                 and 0 < self.rag_keyword_coverage and 0 <= self.rag_keyword_dense <= 1):
             raise ValueError("RAG_KEYWORD_COVERAGE must be above 0 (above 1 disables it) and RAG_KEYWORD_DENSE must be 0-1")
@@ -197,6 +202,7 @@ def load_settings(env_file: str | None = None) -> Settings:
         decider_gguf_file=_env("DECIDER_GGUF_FILE", "decider0-1.gguf"),
         decider_threads=_env_int("DECIDER_THREADS", 4),
         decider_gpu_layers=_env_int("DECIDER_GPU_LAYERS", 0),
+        decider_gpu_devices=",".join(d.strip() for d in _env("DECIDER_GPU_DEVICES", "auto").split(",")),
         decider_context=_env_int("DECIDER_CONTEXT", 4096),
         rag_keyword_coverage=_env_float("RAG_KEYWORD_COVERAGE", 0.5),
         rag_keyword_dense=_env_float("RAG_KEYWORD_DENSE", 0.62),

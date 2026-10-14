@@ -28,7 +28,7 @@ def settings(tmp_path):
         llm_url="http://llama.test", classifier_url="http://classifier.test", api_key="", llm_api_key="",
         classifier_backend="llamacpp", decider_model="Mapika/decider-2b-GGUF",
         decider_gguf_file="decider-2b-v11-Q4_K_M.gguf", decider_threads=4,
-        decider_gpu_layers=0, decider_context=4096,  # Production settings must never trigger native downloads in unit tests.
+        decider_gpu_layers=0, decider_gpu_devices="auto", decider_context=4096,  # Never inherit live GPU worker selection in tests.
         wiki_source=str(FIXTURE_WIKI), wiki_public_url="https://wiki.test/wiki/",
         index_dir=tmp_path / "index", persona_path=persona,
         rag_game_evidence=0.5, min_relevance=0.2, guard_keep_margin=1.0, guard_min_words=3, guard_retries=1, guard_allowed_terms=(),

@@ -1,5 +1,70 @@
 # npc-rag: the LiDollQuest tutorial NPC
 
+## Automatic classifier workers per GPU
+
+With `CLASSIFIER_BACKEND=decider` and `DECIDER_GPU_LAYERS=-1`, startup now discovers the
+dedicated GPUs exposed by the installed llama-cpp-python backend and loads one Decider
+worker per card. `DECIDER_GPU_DEVICES=auto` is the default, including when absent from an
+existing `.env`. Pull this code and restart the RAG service to apply it. CUDA and Vulkan
+rigs use the same setting; keep their matching GPU wheel installed.
+
+All workers share the existing 9092 endpoint, classifier queue and label cache. Each owns
+a separate spawned process and native context, explicitly restricted to its card (no model
+splitting across cards). The first idle worker takes the next request; sequential requests
+rotate across idle workers. Timed-out queued work is discarded; an already executing call
+keeps its worker until native inference finishes. Model/prompt/scoring, wiki routing and
+the game-server endpoints stay the same. No new GGUF, network port or game-server update is needed.
+
+Inspect names without loading model weights:
+
+```powershell
+.venv\Scripts\python.exe -m npc_rag devices
+```
+
+Optional `.env` overrides: `DECIDER_GPU_DEVICES=CUDA0` tests one NVIDIA worker;
+`DECIDER_GPU_DEVICES=Vulkan0,Vulkan1` explicitly selects two Vulkan cards. Use names from
+the device command; native backend numbering can differ from Windows Task Manager.
+Auto excludes CPU/BLAS and integrated GPUs, deduplicating known physical device IDs when
+multiple backends expose the same card. Explicit names can opt into an integrated GPU.
+No visible dedicated GPU, unknown names or any worker failing to load prevents GPU-mode
+startup with an error. `DECIDER_GPU_LAYERS=0` restores the original single CPU worker.
+
+`/health.classification` reports `execution=gpu-process-pool`, total `capacity`,
+`healthy_capacity`, `in_flight`, `queued`, and each worker's device name, card description,
+PID, busy state, completed count and failures. Two cards should show capacity 2 and
+different PIDs. A crashed worker is removed from scheduling; remaining healthy workers
+continue. Restart RAG to restore a failed worker. Health device assignments describe the
+restricted native load target, not measured GPU utilization or offloaded-layer counts.
+Workers also watch their parent process and exit if the launcher force-stops RAG, releasing
+their GPU memory instead of remaining alive through a restart.
+
+Each worker needs its own model/context VRAM and Python/Torch host memory. `DECIDER_THREADS`
+is per worker. Leave room for Qwen's generation buffers on each card; insufficient memory
+fails startup rather than silently reducing the configured pool. Shared GPU compute and
+cached labels mean two workers do not guarantee twice the full-conversation throughput.
+Keep one RAG service process per host; additional Uvicorn workers would duplicate this pool.
+
+Device enumeration/pinning follows the pinned native ABI and llama.cpp's
+[backend registry](https://github.com/ggml-org/llama.cpp/blob/master/ggml/include/ggml-backend.h)
+and [model device parameters](https://github.com/ggml-org/llama.cpp/blob/master/include/llama.h).
+Validate locally with `.venv\Scripts\python.exe -m pytest tests/test_decider_pool.py tests/test_decider.py -q`,
+then repeat live accuracy and simulated-player tests after deployment. Real multi-card GPU
+placement and speed require testing on the target rigs; local process tests use model doubles.
+Validation on 2026-10-14: the full suite passed 196 tests with three optional native tests skipped.
+The installed 0.3.36 CPU wheel also passed the real device-listing command, correctly returning
+no GPUs; CUDA/Vulkan device enumeration and model placement remain target-host checks.
+
+Earlier single-worker GPU-configured verification (2026-10-14): both deployed nodes retained 95% held-out and
+100% mixed accuracy (`runs/live-decider01-gpu-accuracy-20261014.json`). The server harness
+completed 624 sustained requests with no HTTP failures; generated-reply medians at
+1/2/4/8/16/24 concurrency were 1.60/1.45/2.15/3.44/5.57/1.81 seconds. The separate
+100-chat burst had a 9.86-second median and 20.55-second p95, with all replies generated.
+Both nodes recovered idle/healthy with zero native classifier failures. These random,
+cache-warmed, overflow-enabled runs are not a controlled GPU speedup measurement, and
+the five-second median is still inconsistent. Live health reports requested `gpu_layers=-1`;
+the 41 ms raw benchmark was on a separate test rig. Each live service had one Decider
+worker during that run; these measurements predate the automatic pool above.
+
 ## Enable Decider GPU offload on existing Windows rigs
 
 Sakura and RAG use separate native libraries: GPU generation in Sakura does not enable GPU
@@ -24,7 +89,8 @@ with offload unavailable. This verifies capability, not this model's actual plac
 Set `DECIDER_GPU_LAYERS=-1` in `.env` and restart RAG with the usual launcher/task. Confirm GPU
 use using native loading logs and GPU monitoring; `/health.classification.gpu_layers` reports the
 requested setting only. Keep model, threads, context, routing and overflow settings identical for
-the CPU/GPU A/B. Revert to `DECIDER_GPU_LAYERS=0` and restart for CPU execution. The GPU rig still
+the CPU/GPU A/B. GPU mode now defaults to one classifier per detected dedicated GPU; select one
+device explicitly for a single-worker comparison. Revert to `DECIDER_GPU_LAYERS=0` and restart for CPU execution. The GPU rig still
 needs a compatible driver/runtime; DLL errors must be resolved before benchmarking.
 
 Official backend installation documentation: https://github.com/abetlen/llama-cpp-python#installation
@@ -481,8 +547,9 @@ is null because no HTTP classifier is used. Existing `method=llm` and `scores.ll
 as a model-based category, including Decider, for client compatibility. Revert to
 `CLASSIFIER_BACKEND=llamacpp` and restart to use the previous CLASSIFIER_URL again.
 
-One worker owns one native context per RAG process. `DECIDER_THREADS` controls CPU threads (1-64),
-not parallel model copies. `DECIDER_GPU_LAYERS=0` selects CPU; -1 requests all layers on a GPU with
+One worker owns one native context. CPU mode uses one worker; GPU mode defaults to one spawned
+worker per detected dedicated GPU (see automatic workers above). `DECIDER_THREADS` controls CPU
+threads per worker (1-64), not parallel model copies. `DECIDER_GPU_LAYERS=0` selects CPU; -1 requests all layers on a GPU with
 a compatible llama-cpp-python build. GPU layers accept -1 through 256; context accepts 2048-32768.
 Multiple service workers duplicate model memory. Do not enable multi-sequence GGUF batching here:
 the upstream model card reports that it can change Q4 probabilities. Queue cancellation prevents

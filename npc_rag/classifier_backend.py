@@ -190,6 +190,9 @@ def make_classifier(settings, *, client=None):
     if client is not None:
         return ChatClassifier(client, settings.classifier_timeout)
     if settings.classifier_backend == "decider":
+        if settings.decider_gpu_layers != 0:
+            from .decider_pool import DeciderPool
+            return DeciderPool(settings)  # GPU mode detects cards at startup and isolates one context per process.
         return DeciderClassifier(settings)
     return ChatClassifier(LlamaClient(settings.classifier_url, settings.classifier_model,
                                      settings.llm_api_key, settings.llm_concurrency), settings.classifier_timeout)
