@@ -10,7 +10,7 @@ their existing paths. The default remains `llamacpp`, so updating the checkout a
 Decider is an optional Python 3.11+ dependency. Install it into the **RAG virtual environment**:
 
 ```powershell
-.venv\Scripts\python -m pip install -r requirements-decider.txt
+powershell -ExecutionPolicy Bypass -File ps/Install-Decider.ps1
 # For a complete initial RAG install, the existing installer also accepts -Decider:
 # powershell -ExecutionPolicy Bypass -File ps/Install-NpcRag.ps1 -Decider
 ```
@@ -19,6 +19,14 @@ The upstream package includes torch/transformers even when using GGUF. `llama-cp
 is needed for this model architecture; a source build on Windows needs Visual Studio C++ Build Tools
 and CMake. A working Sakura executable does not install these Python dependencies. Native installation
 and live model accuracy/latency must be checked on each host; the unit suite uses a model double.
+
+On Windows, the helper temporarily sets TEMP/TMP/TMPDIR to the checkout's `.t` directory and
+restores their previous values afterward. This avoids the reported 260-character extraction path
+ending in `ChatAttachmentsListItemMcpResource.svelte`. It does not change the registry or remove
+existing temp files. If the checkout path is long, pass `-BuildTemp C:\t` (or another short writable
+directory). This addresses source extraction; subsequent compilation still needs the toolchain above.
+Keep `llama-cpp-python>=0.3.35,<0.4` as required by Decider; an older prebuilt wheel is not a substitute.
+The helper's PowerShell syntax is checked locally; installation on the affected server still needs a retry.
 
 The built-in model defaults are:
 

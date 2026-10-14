@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.t/
 .env
 .env.overflow
 # Downloaded embedding model and the built index are recreated by Install-NpcRag.ps1.
