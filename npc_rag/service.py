@@ -19,8 +19,8 @@ from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from .classifier import (CLASSIFIER_REVISION, CLASSIFY_GRAMMAR, GAME, GENERAL, ModelDecisionCache,
-                         Verdict, classifier_messages, classify, parse_verdict)
+from .classifier import CLASSIFIER_REVISION, GAME, GENERAL, ModelDecisionCache, Verdict, classify
+from .classifier_backend import make_classifier
 from .common import Sessions, api_key_guard
 from .config import Settings
 from .guard import find_unsupported_terms, leaks_persona, retry_rule, select_hits, to_ascii
@@ -104,13 +104,15 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
         if state["index"] is None:
             state["index"] = await asyncio.to_thread(load_or_build, settings, state["embedder"])
         state["llm"] = llm or make_reply_llm(settings)  # The same guarded pipelines support either local or overflow generation.
-        state["classifier"] = classifier_llm or LlamaClient(settings.classifier_url, settings.classifier_model,
-                                                            settings.llm_api_key, settings.llm_concurrency)
-        state["classifier_cache"] = ModelDecisionCache(settings.classifier_cache_size, settings.classifier_cache_ttl)
-        state["persona"] = settings.persona_path.read_text(encoding="utf-8")
-        yield
-        await state["llm"].aclose()
-        await state["classifier"].aclose()
+        state["classifier"] = make_classifier(settings, client=classifier_llm)
+        try:
+            await state["classifier"].start()  # Native model must load successfully before this service accepts traffic.
+            state["classifier_cache"] = ModelDecisionCache(settings.classifier_cache_size, settings.classifier_cache_ttl)
+            state["persona"] = settings.persona_path.read_text(encoding="utf-8")
+            yield
+        finally:
+            await state["classifier"].aclose()
+            await state["llm"].aclose()
 
     app = FastAPI(title="npc-rag", lifespan=lifespan)
     guard = Depends(api_key_guard(settings.api_key))
@@ -136,11 +138,8 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
 
     async def ask_classifier_uncached(message: str) -> str | None:
         try:
-            text = await asyncio.wait_for(state["classifier"].chat(
-                classifier_messages(message), grammar=CLASSIFY_GRAMMAR,
-                max_tokens=4, temperature=0.0, timeout=settings.classifier_timeout),
-                timeout=settings.classifier_timeout)  # Bound the slot queue and HTTP request together.
-            return parse_verdict(text)
+            return await asyncio.wait_for(state["classifier"].decide(message),
+                timeout=settings.classifier_timeout)  # Bound queue + HTTP/native wait; native work may finish afterward.
         except asyncio.TimeoutError:
             log.warning("Classifier deadline exceeded (queue + request), using the wiki score")
             return None
@@ -170,9 +169,11 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
         llm_ok, clf_ok = await asyncio.gather(state["llm"].health(), state["classifier"].health())
         idx: WikiIndex = state["index"]
         return {"ok": idx is not None, "service": "npc-rag", "llm": llm_ok, "classifier": clf_ok,
-                "llm_url": settings.llm_url, "classifier_url": settings.classifier_url,
+                "llm_url": settings.llm_url,
+                "classifier_url": settings.classifier_url if settings.classifier_backend == "llamacpp" else None,
                 "overflow": state["llm"].view() if hasattr(state["llm"], "view") else {"enabled": False},
-                "classification": {"policy": CLASSIFIER_REVISION, "cache": state["classifier_cache"].view()},
+                "classification": {"policy": CLASSIFIER_REVISION, "cache": state["classifier_cache"].view(),
+                                   **state["classifier"].view()},
                 "index": idx.meta if idx else None}
 
     @app.post("/v1/search", dependencies=[guard])

@@ -114,6 +114,22 @@ class Settings:
     openai_timeout: float = 12.0          # Cloud deadline, bounded further by the caller's reply timeout.
     classifier_cache_size: int = 1024    # Maximum completed labels and shared in-flight classifier calls; zero disables.
     classifier_cache_ttl: float = 300.0  # Seconds to reuse a model decision; wiki evidence is still checked afresh.
+    classifier_backend: str = "llamacpp"  # Existing HTTP classifier or in-process Decider GGUF scoring.
+    decider_model: str = "Mapika/decider-2b-GGUF"  # Hugging Face repo ID or local directory containing tokenizer/config.
+    decider_gguf_file: str = "decider-2b-v11-Q4_K_M.gguf"
+    decider_threads: int = 4             # CPU threads for the single native inference worker.
+    decider_gpu_layers: int = 0          # CPU by default; -1 offloads all layers with a compatible build.
+    decider_context: int = 4096          # Entire prompt capacity, including the decision instructions.
+
+    def __post_init__(self):
+        if self.classifier_backend not in ("llamacpp", "decider"):
+            raise ValueError("CLASSIFIER_BACKEND must be llamacpp or decider")
+        if not self.decider_model.strip() or not self.decider_gguf_file.endswith(".gguf"):
+            raise ValueError("DECIDER_MODEL and a DECIDER_GGUF_FILE ending in .gguf are required")
+        if not 1 <= self.decider_threads <= 64 or not -1 <= self.decider_gpu_layers <= 256:
+            raise ValueError("DECIDER_THREADS must be 1-64 and DECIDER_GPU_LAYERS must be -1 through 256")
+        if not 2048 <= self.decider_context <= 32768:
+            raise ValueError("DECIDER_CONTEXT must be 2048-32768 tokens")
 
 
 def load_settings(env_file: str | None = None) -> Settings:
@@ -171,4 +187,10 @@ def load_settings(env_file: str | None = None) -> Settings:
         openai_timeout=_positive_float("OPENAI_TIMEOUT", 12.0),
         classifier_cache_size=_env_int("CLASSIFIER_CACHE_SIZE", 1024),
         classifier_cache_ttl=_env_float("CLASSIFIER_CACHE_TTL", 300.0),
+        classifier_backend=_env("CLASSIFIER_BACKEND", "llamacpp").lower(),
+        decider_model=_env("DECIDER_MODEL", "Mapika/decider-2b-GGUF"),
+        decider_gguf_file=_env("DECIDER_GGUF_FILE", "decider-2b-v11-Q4_K_M.gguf"),
+        decider_threads=_env_int("DECIDER_THREADS", 4),
+        decider_gpu_layers=_env_int("DECIDER_GPU_LAYERS", 0),
+        decider_context=_env_int("DECIDER_CONTEXT", 4096),
     )

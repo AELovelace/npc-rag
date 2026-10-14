@@ -1,0 +1,3 @@
+# Optional native classifier, Python 3.11+. Install alongside requirements.txt.
+# Includes torch/transformers and llama-cpp-python; a CPU source build needs a C++ toolchain.
+decider-ai[gguf]==1.9.0

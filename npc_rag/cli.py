@@ -7,6 +7,7 @@ import json
 import logging
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from .config import ROOT, load_settings
@@ -54,14 +55,21 @@ def cmd_ask(s, args) -> int:
 def cmd_eval(s, args) -> int:
     """Evaluate untouched held-out labels, optionally using a live RAG index and extra mixed-intent cases."""
     import httpx
-    from .classifier import CLASSIFIER_REVISION, CLASSIFY_GRAMMAR, classifier_messages, classify, parse_verdict
+    from .classifier import CLASSIFIER_REVISION, classify
+    from .classifier_backend import make_classifier
     from .evaluation import summarize
     from .index import WikiIndex
-    from .llm import LlamaClient, LLMError
+    from .llm import LLMError
 
     logging.getLogger("httpx").setLevel(logging.WARNING)  # Accuracy summaries should not be buried in per-request logs.
     idx = None if args.evidence_url or args.raw_model else WikiIndex.load(s.index_dir, _embedder(s))
-    llm = LlamaClient(args.classifier_url or s.classifier_url, s.classifier_model, s.llm_api_key)
+    if args.classifier_backend:
+        s = replace(s, classifier_backend=args.classifier_backend)
+    if args.classifier_url:
+        if s.classifier_backend == "decider":
+            raise ValueError("--classifier-url requires --classifier-backend llamacpp")
+        s = replace(s, classifier_url=args.classifier_url)
+    llm = None if args.wiki_only else make_classifier(s)  # Wiki-only evaluation never downloads or loads Decider.
     data = json.loads((ROOT / "data" / "eval_messages.json").read_text(encoding="utf-8"))
     cases = [(label, msg, "held_out") for label in ("game", "general") for msg in data[label]]
     if args.include_mixed:
@@ -81,16 +89,16 @@ def cmd_eval(s, args) -> int:
         if args.wiki_only:
             return None
         try:
-            return parse_verdict(await asyncio.wait_for(llm.chat(classifier_messages(q), grammar=CLASSIFY_GRAMMAR,
-                                                max_tokens=4, temperature=0, timeout=s.classifier_timeout),
-                                                timeout=s.classifier_timeout))
+            return await asyncio.wait_for(llm.decide(q), timeout=s.classifier_timeout)
         except (LLMError, asyncio.TimeoutError):
             return None
 
     async def run():
         rows = []
         try:
-            identity = await llm.model_identity()
+            if llm is not None:
+                await llm.start()
+            identity = await llm.model_identity() if llm is not None else None
             for label, msg, dataset in cases:
                 start = time.perf_counter()
                 row = {"expected": label, "message": msg, "dataset": dataset}
@@ -105,13 +113,16 @@ def cmd_eval(s, args) -> int:
                 row["ms"] = round((time.perf_counter() - start) * 1000)
                 rows.append(row)
             return {"policy": CLASSIFIER_REVISION, "model_identity": identity,
-                    "classifier_url": args.classifier_url or s.classifier_url, "evidence_url": args.evidence_url,
+                    "classifier_url": s.classifier_url if s.classifier_backend == "llamacpp" else None,
+                    "classifier": llm.view() if llm is not None else {"backend": "wiki-only"},
+                    "evidence_url": args.evidence_url,
                     "wiki_evidence": s.rag_game_evidence, "raw_model": args.raw_model, "wiki_only": args.wiki_only,
                     "summary": summarize(rows),
                     "datasets": {name: summarize([row for row in rows if row["dataset"] == name])
                                  for name in sorted({row["dataset"] for row in rows})}, "results": rows}
         finally:
-            await llm.aclose()
+            if llm is not None:
+                await llm.aclose()
             await remote.aclose()
 
     report = asyncio.run(run())
@@ -149,6 +160,8 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--name", default="Tester", help="player name")
 
     e = sub.add_parser("eval", help="classifier accuracy on data/eval_messages.json")
+    e.add_argument("--env-file", help="optional environment file, as with serve")
+    e.add_argument("--classifier-backend", choices=("llamacpp", "decider"), help="override CLASSIFIER_BACKEND for this evaluation only")
     e.add_argument("--wiki-only", action="store_true", help="skip the classifier model; wiki score only")
     e.add_argument("--raw-model", action="store_true", help="measure model decisions without social shortcuts or wiki overrides")
     e.add_argument("--classifier-url", help="test another model endpoint without changing the service environment")

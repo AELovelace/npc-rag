@@ -1,5 +1,82 @@
 # npc-rag: the LiDollQuest tutorial NPC
 
+## Optional local Decider 2B Q4_K_M classifier (2026-10-14)
+
+`CLASSIFIER_BACKEND=decider` loads `Mapika/decider-2b-GGUF` / `decider-2b-v11-Q4_K_M.gguf`
+inside the existing RAG process. No extra port or Sakura classifier is needed for this backend.
+Reply models, wiki retrieval, companions, social shortcuts, label caching and overflow retain
+their existing paths. The default remains `llamacpp`, so updating the checkout alone does not switch models.
+
+Decider is an optional Python 3.11+ dependency. Install it into the **RAG virtual environment**:
+
+```powershell
+.venv\Scripts\python -m pip install -r requirements-decider.txt
+# For a complete initial RAG install, the existing installer also accepts -Decider:
+# powershell -ExecutionPolicy Bypass -File ps/Install-NpcRag.ps1 -Decider
+```
+
+The upstream package includes torch/transformers even when using GGUF. `llama-cpp-python>=0.3.35`
+is needed for this model architecture; a source build on Windows needs Visual Studio C++ Build Tools
+and CMake. A working Sakura executable does not install these Python dependencies. Native installation
+and live model accuracy/latency must be checked on each host; the unit suite uses a model double.
+
+The built-in model defaults are:
+
+```dotenv
+CLASSIFIER_BACKEND=decider
+DECIDER_MODEL=Mapika/decider-2b-GGUF
+DECIDER_GGUF_FILE=decider-2b-v11-Q4_K_M.gguf
+DECIDER_THREADS=4
+DECIDER_GPU_LAYERS=0
+DECIDER_CONTEXT=4096
+```
+
+`DECIDER_MODEL` also accepts a local directory containing that GGUF, the matching Hugging Face
+tokenizer files, and `decider_config.json`. A GGUF alone is insufficient. Relative directories
+resolve against this checkout. With a Hub ID, the library downloads required files into the usual
+Hugging Face cache on first load; configure `HF_HOME` before launching if a different cache is needed.
+First download/load can exceed the launcher's 120-second health wait, so prepare using the evaluation
+command before changing the live backend. Startup fails clearly if dependencies/config/model cannot load.
+
+Evaluate without changing the live `.env` or generating any dialogue:
+
+```powershell
+.venv\Scripts\python -m npc_rag eval --classifier-backend decider --raw-model --include-mixed --output artifacts/decider-raw.json
+.venv\Scripts\python -m npc_rag eval --classifier-backend decider --include-mixed --output artifacts/decider-hybrid.json
+```
+
+The second command uses the local wiki index; `--evidence-url http://RAG_HOST:9092` instead uses a
+deployed index with the configured NPC_API_KEY. Evaluation records the backend, model, quantization,
+decision policy, per-case timings and per-class accuracy. Keep the held-out messages unchanged;
+require the existing 90%-per-class gate before a live burst. Model load time is outside per-case timings.
+Evaluation loads its own model instance, so avoid running it alongside production Decider on a busy host.
+
+After validation, add the settings above to each RAG host's `.env` and restart the existing 9092 service.
+`/health.classification.backend` should be `decider`, with `decision_policy=game-chat-v1`, model/file,
+CPU threads, configured GPU layers, context, capacity, busy state and failure count. `classifier_url`
+is null because no HTTP classifier is used. Existing `method=llm` and `scores.llm` retain their meanings
+as a model-based category, including Decider, for client compatibility. Revert to
+`CLASSIFIER_BACKEND=llamacpp` and restart to use the previous CLASSIFIER_URL again.
+
+One worker owns one native context per RAG process. `DECIDER_THREADS` controls CPU threads (1-64),
+not parallel model copies. `DECIDER_GPU_LAYERS=0` selects CPU; -1 requests all layers on a GPU with
+a compatible llama-cpp-python build. GPU layers accept -1 through 256; context accepts 2048-32768.
+Multiple service workers duplicate model memory. Do not enable multi-sequence GGUF batching here:
+the upstream model card reports that it can change Q4 probabilities. Queue cancellation prevents
+unused requests reaching the native model. An inference already running cannot be stopped by Python
+timeout: it keeps its slot until completion, then the next request can proceed. The deadline bounds
+the caller's wait, not native CPU runtime. Invalid/failed/overlong-input decisions use existing wiki
+fallback and never enter the label cache. Restart RAG after replacing local model/config files.
+
+The adapter uses the model's calibrated option scores, without chat templates, generated labels or
+the llama.cpp grammar. Schema validity is not proof of correct routing; no Decider accuracy or
+five-second conversation claim is established by the local contract tests.
+Validation: 143 local tests pass, including native cancellation/recovery and both evaluation modes.
+The dependency-resolution dry run stalled at package metadata and was stopped; no native packages
+or model weights were installed by this preparation. Run the install/import check on each RAG host.
+Upstream: [model files and scoring instructions](https://huggingface.co/Mapika/decider-2b-GGUF),
+[Decider runtime](https://github.com/Mapika/decider).
+
 ## Social routing, constrained classification and label caching (2026-10-14)
 
 The `hybrid-v1` policy implements five changes:
@@ -41,6 +118,13 @@ Run the accuracy gate before a burst, using either the local index or a deployed
 model calls. The remote search uses the existing NPC_API_KEY; neither mode changes live settings
 or generates paid dialogue. Keep evaluation examples out of prompt tuning. Repeated-prompt burst
 results benefit from caching; also measure diverse, previously unseen messages before estimating capacity.
+
+The later ElectricLMA abliterated 1B replacement also failed this policy's gate (58/96 and 52/96).
+An updated/old-node burst exposed 45 wrong no-notes responses on the updated node; the old node's
+50 chat replies all used wiki-score fallback because unconstrained model responses were invalid.
+Do not treat valid constrained labels, cached results or successful fallback replies as proof that
+a model follows the classification task. This model/setup is not qualified by the current checks.
+The server burst tool accepts `--require-policy hybrid-v1` to reject mixed deployments before load.
 
 Validation on October 14: 122 local tests cover shortcut boundaries, constrained payloads, TTL/LRU,
 100-way shared calls, cancellation and model changes. Against the live indexes, the new policy

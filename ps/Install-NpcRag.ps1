@@ -5,7 +5,8 @@
     powershell -ExecutionPolicy Bypass -File ps\Install-NpcRag.ps1
 #>
 param(
-    [string]$Python = ""  # Path to python.exe (3.10+). Empty = first suitable one on PATH or the py launcher.
+    [string]$Python = "",  # Path to python.exe (3.10+, or 3.11+ for Decider).
+    [switch]$Decider       # Install the optional in-process GGUF classifier without changing the live .env.
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot   # Repository root (this script lives in ps\).
@@ -35,6 +36,14 @@ $Venv = Join-Path $Root ".venv\Scripts\python.exe"
 & $Venv -m pip install --upgrade pip --quiet
 & $Venv -m pip install -r requirements.txt --quiet  # fastembed (CPU/ONNX), fastapi, uvicorn, httpx, numpy, langgraph (companions), pytest.
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
+if ($Decider) {
+    & $Venv -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)"
+    if ($LASTEXITCODE -ne 0) { throw "Decider needs Python 3.11+ in this virtual environment." }
+    & $Venv -m pip install -r requirements-decider.txt  # Native CPU build may require Visual Studio C++ Build Tools.
+    if ($LASTEXITCODE -ne 0) { throw "Decider installation failed; see README.md for native build requirements." }
+    & $Venv -c "from decider.infer import Decider; import llama_cpp"  # Check native imports without downloading model weights.
+    if ($LASTEXITCODE -ne 0) { throw "Decider native imports failed; resolve the dependency/DLL error before enabling the backend." }
+}
 
 # ── Settings file ─────────────────────────────────────────────────────────────
 if (-not (Test-Path ".env")) {
