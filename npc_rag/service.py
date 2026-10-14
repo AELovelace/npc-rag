@@ -19,7 +19,8 @@ from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from .classifier import CLASSIFY_PROMPT, GAME, GENERAL, Verdict, classify, parse_verdict
+from .classifier import (CLASSIFIER_REVISION, CLASSIFY_GRAMMAR, GAME, GENERAL, ModelDecisionCache,
+                         Verdict, classifier_messages, classify, parse_verdict)
 from .common import Sessions, api_key_guard
 from .config import Settings
 from .guard import find_unsupported_terms, leaks_persona, retry_rule, select_hits, to_ascii
@@ -105,6 +106,7 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
         state["llm"] = llm or make_reply_llm(settings)  # The same guarded pipelines support either local or overflow generation.
         state["classifier"] = classifier_llm or LlamaClient(settings.classifier_url, settings.classifier_model,
                                                             settings.llm_api_key, settings.llm_concurrency)
+        state["classifier_cache"] = ModelDecisionCache(settings.classifier_cache_size, settings.classifier_cache_ttl)
         state["persona"] = settings.persona_path.read_text(encoding="utf-8")
         yield
         await state["llm"].aclose()
@@ -118,10 +120,24 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
         return {"query": query, "best_dense": round(best, 4), "relevant": best >= settings.min_relevance,
                 "results": [h.to_dict() for h in hits]}
 
-    async def ask_classifier(message: str) -> str | None:
+    classifier_identity, identity_checked = None, float("-inf")
+    identity_lock = asyncio.Lock()
+
+    async def identity_known() -> bool:
+        """Recheck advertised model identity at most every 30 seconds; a failed check disables caching."""
+        nonlocal classifier_identity, identity_checked
+        async with identity_lock:
+            if time.monotonic() - identity_checked >= 30:
+                identity = await state["classifier"].model_identity()
+                if identity is None or identity != classifier_identity:
+                    state["classifier_cache"].clear()  # A hot swap or an unknown backend must not reuse old labels.
+                classifier_identity, identity_checked = identity, time.monotonic()
+            return classifier_identity is not None
+
+    async def ask_classifier_uncached(message: str) -> str | None:
         try:
             text = await asyncio.wait_for(state["classifier"].chat(
-                [{"role": "system", "content": CLASSIFY_PROMPT}, {"role": "user", "content": message}],
+                classifier_messages(message), grammar=CLASSIFY_GRAMMAR,
                 max_tokens=4, temperature=0.0, timeout=settings.classifier_timeout),
                 timeout=settings.classifier_timeout)  # Bound the slot queue and HTTP request together.
             return parse_verdict(text)
@@ -130,6 +146,16 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
             return None
         except LLMError as exc:
             log.warning("Classifier unavailable, using the wiki score: %s", exc)
+            return None
+
+    async def ask_classifier(message: str) -> str | None:
+        async def cached():
+            if not await identity_known():
+                return await ask_classifier_uncached(message)  # Keep serving when optional identity discovery is unavailable.
+            return await state["classifier_cache"].get(message, lambda: ask_classifier_uncached(message))
+        try:
+            return await asyncio.wait_for(cached(), timeout=settings.classifier_timeout)  # Identity lookup and shared waits count too.
+        except asyncio.TimeoutError:
             return None
 
     async def classify_with_search(text: str, cache: dict):
@@ -146,6 +172,7 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
         return {"ok": idx is not None, "service": "npc-rag", "llm": llm_ok, "classifier": clf_ok,
                 "llm_url": settings.llm_url, "classifier_url": settings.classifier_url,
                 "overflow": state["llm"].view() if hasattr(state["llm"], "view") else {"enabled": False},
+                "classification": {"policy": CLASSIFIER_REVISION, "cache": state["classifier_cache"].view()},
                 "index": idx.meta if idx else None}
 
     @app.post("/v1/search", dependencies=[guard])

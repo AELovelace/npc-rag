@@ -1,0 +1,23 @@
+{
+  "_about": "Additional evaluation cases. Do not copy these strings into prompt examples or shortcut rules. Report them separately from the original held-out set.",
+  "game": [
+    "Hi there! Can you explain how to unlock another skill?",
+    "Thank you, but I still cannot find the inventory screen.",
+    "I'm worried about losing my gear. What happens when I die?",
+    "Good evening. Where can I sell this spare sword?",
+    "I feel embarrassed. Which control lets me change my clothes?",
+    "Bye for now, but first tell me how to save my progress.",
+    "I like this outfit; can it stop an accident from showing?",
+    "That fight upset me. How do I restore my health?"
+  ],
+  "general": [
+    "I had a rough evening and want someone to listen.",
+    "The rain sounds peaceful. Do you enjoy it too?",
+    "I like talking with you after a long adventure.",
+    "Your outfit looks lovely today.",
+    "Winning that battle made me feel proud of myself.",
+    "I don't need advice, just a little company.",
+    "Would you rather hear a joke or a silly story?",
+    "Thank you for listening when I needed a friend."
+  ]
+}

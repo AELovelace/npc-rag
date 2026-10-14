@@ -1,5 +1,55 @@
 # npc-rag: the LiDollQuest tutorial NPC
 
+## Social routing, constrained classification and label caching (2026-10-14)
+
+The `hybrid-v1` policy implements five changes:
+
+1. Whole-message greetings, thanks, farewells and simple check-ins return `general` with
+   `method=social`, without calling the classifier or embedding the message. A greeting with an
+   extra question (for example, "Hello, how do I equip this?") still takes the normal path.
+2. Other messages use a focused gameplay-versus-conversation instruction, balanced examples and
+   JSON-quoted input. Strong wiki evidence still overrides a model CHAT decision.
+3. The classifier request includes a llama.cpp grammar allowing only `GAME` or `CHAT`.
+   The parser rejects extra prose if a backend ignores the constraint. Generation requests do not
+   receive this grammar. Format validity alone does not establish classification accuracy.
+4. `eval` reports both error directions and accuracy for each class. Its default gate requires
+   at least 90% accuracy in each class; a failed gate exits with status 1. The original 80-message
+   dataset is unchanged, and `--include-mixed` adds 16 separate mixed/social examples.
+5. Each RAG process caches valid model labels for identical trimmed messages, preserving case and
+   internal whitespace. Simultaneous identical calls share one model request. Cancelling one
+   caller preserves other waiters; cancelling the last releases the upstream slot. Wiki searches,
+   persona, history, memories and replies are not cached by this feature.
+
+`CLASSIFIER_CACHE_SIZE=1024` and `CLASSIFIER_CACHE_TTL=300` bound cache size and age in seconds.
+Zero size or TTL disables caching and shared calls. Size accepts 0-16384; TTL accepts 0-86400.
+Timeouts, invalid labels and errors are not cached. The advertised `/v1/models` identity is checked
+at most every 30 seconds when needed: a changed identity invalidates labels; unavailable identity
+discovery disables reuse. Restart RAG after a model replacement using the same alias, or after
+changing the prompt/configuration, to clear labels immediately. Cache contents never leave the process.
+`/health.classification` exposes the policy version and cache counts, without message text.
+`CLASSIFIER_TIMEOUT` still includes identity lookup, queueing and waiting on shared model work.
+
+Run the accuracy gate before a burst, using either the local index or a deployed RAG index:
+
+```powershell
+.venv\Scripts\python -m pytest -q
+.venv\Scripts\python -m npc_rag eval --include-mixed --output artifacts/classifier-eval.json
+.venv\Scripts\python -m npc_rag eval --classifier-url http://MODEL_HOST:9094 --evidence-url http://RAG_HOST:9092 --include-mixed --output artifacts/classifier-remote.json
+```
+
+`--raw-model` evaluates the model without wiki overrides or social shortcuts. `--wiki-only` skips
+model calls. The remote search uses the existing NPC_API_KEY; neither mode changes live settings
+or generates paid dialogue. Keep evaluation examples out of prompt tuning. Repeated-prompt burst
+results benefit from caching; also measure diverse, previously unseen messages before estimating capacity.
+
+Validation on October 14: 122 local tests cover shortcut boundaries, constrained payloads, TTL/LRU,
+100-way shared calls, cancellation and model changes. Against the live indexes, the new policy
+scored 76/96 and 59/96 with Vikhr 1B Q4 (failed), versus 92/96 and 93/96 with Qwen3-4B Q8 (passed).
+These are classification checks, not proof of a five-second complete reply. The user is preparing
+an English-oriented abliterated 1B replacement and a dedicated classifier GPU setup; neither is
+assumed deployed. Point CLASSIFIER_URL at the chosen classifier after validation and restart the
+existing 9092 RAG service. No new RAG listener or game-server URL is needed.
+
 ## Classification latency fix (2026-10-14)
 
 Wiki retrieval and the classifier run concurrently. Strong wiki evidence at or above
@@ -159,7 +209,7 @@ Response:
 ```
 
 - `reply` is one plain-ASCII paragraph of at most 600 characters (`MAX_REPLY_CHARS`), with no Markdown, so it can go straight into the dialogue box.
-- `method` is `llm` when the classifier model decided, `wiki` when strong evidence decided early or the model was unavailable, or `caller` when the request's `category` decided.
+- `method` is `social` for an exact social shortcut, `llm` when the model label decided (possibly cached), `wiki` when strong evidence decided early or the model was unavailable, or `caller` when the request's `category` decided.
 - `guard` says what happened to the reply (see [The guard](#the-guard)).
 - `fallback: true` means the main model was down or too slow. Pip then says a canned line, pointing at the best wiki section when there is one. Players always get an answer.
 - `sources` link the wiki sections the reply was written from. They are empty for small talk and whenever the guard replaced the reply.

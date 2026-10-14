@@ -397,6 +397,40 @@ def test_classifier_down_uses_wiki_score(settings, embedder, index, llama, clf):
     assert (game["category"], game["method"]) == ("game", "wiki")
 
 
+def test_classifier_cache_payload_and_model_identity_changes(settings, embedder, index, llama, monkeypatch):
+    import time
+    from types import SimpleNamespace
+    from npc_rag.classifier import CLASSIFY_GRAMMAR
+    clock, model, calls = [0], ["first"], []
+    monkeypatch.setattr(service, "time", SimpleNamespace(monotonic=lambda: clock[0], perf_counter=time.perf_counter))
+
+    def handler(request):
+        if request.url.path == "/v1/models":
+            if model[0] is None:
+                return httpx.Response(503, json={"error": "unavailable"})
+            return httpx.Response(200, json={"data": [{"id": model[0]}]})
+        body = json.loads(request.content)
+        calls.append(body)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "CHAT" if model[0] == "first" else "GAME"}}]})
+
+    app = service.create_app(dataclasses.replace(settings, rag_game_evidence=1.1), embedder=embedder, index=index,
+                             llm=LlamaClient(settings.llm_url, transport=httpx.MockTransport(llama.handler)),
+                             classifier_llm=LlamaClient(settings.classifier_url, transport=httpx.MockTransport(handler)))
+    with TestClient(app) as client:
+        message = "What music do you enjoy?"
+        assert client.post("/v1/classify", json={"message": message}).json()["category"] == "general"
+        assert client.post("/v1/classify", json={"message": message}).json()["category"] == "general"
+        assert len(calls) == 1 and calls[0]["grammar"] == CLASSIFY_GRAMMAR
+        assert calls[0]["messages"][-1]["content"] == 'Message: "What music do you enjoy?"\nLabel:'
+        model[0], clock[0] = "second", 31
+        assert client.post("/v1/classify", json={"message": message}).json()["category"] == "game"
+        assert len(calls) == 2  # A hot swap invalidates the label before its ordinary TTL expires.
+        model[0], clock[0] = None, 62
+        for _ in range(2):
+            assert client.post("/v1/classify", json={"message": message}).json()["category"] == "game"
+        assert len(calls) == 4  # Failed model discovery disables both old and newly computed cache entries.
+
+
 def test_classifier_burst_deadline_includes_slot_queue(settings, embedder, index, llama):
     import asyncio
 

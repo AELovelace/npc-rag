@@ -112,6 +112,8 @@ class Settings:
     openai_local_capacity: int = 4        # Total active local generations on this RAG process before cloud overflow.
     openai_concurrency: int = 4           # Maximum concurrent cloud generations per RAG process.
     openai_timeout: float = 12.0          # Cloud deadline, bounded further by the caller's reply timeout.
+    classifier_cache_size: int = 1024    # Maximum completed labels and shared in-flight classifier calls; zero disables.
+    classifier_cache_ttl: float = 300.0  # Seconds to reuse a model decision; wiki evidence is still checked afresh.
 
 
 def load_settings(env_file: str | None = None) -> Settings:
@@ -167,4 +169,6 @@ def load_settings(env_file: str | None = None) -> Settings:
         openai_local_capacity=_positive_int("OPENAI_LOCAL_CAPACITY", 4),
         openai_concurrency=_positive_int("OPENAI_CONCURRENCY", 4),
         openai_timeout=_positive_float("OPENAI_TIMEOUT", 12.0),
+        classifier_cache_size=_env_int("CLASSIFIER_CACHE_SIZE", 1024),
+        classifier_cache_ttl=_env_float("CLASSIFIER_CACHE_TTL", 300.0),
     )

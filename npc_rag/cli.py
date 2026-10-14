@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import sys
+import time
+from pathlib import Path
 
 from .config import ROOT, load_settings
 
@@ -50,46 +52,80 @@ def cmd_ask(s, args) -> int:
 
 
 def cmd_eval(s, args) -> int:
-    """Accuracy of the classifier (CLASSIFIER_URL, wiki score as fallback) on data/eval_messages.json."""
-    from .classifier import CLASSIFY_PROMPT, classify, parse_verdict
+    """Evaluate untouched held-out labels, optionally using a live RAG index and extra mixed-intent cases."""
+    import httpx
+    from .classifier import CLASSIFIER_REVISION, CLASSIFY_GRAMMAR, classifier_messages, classify, parse_verdict
+    from .evaluation import summarize
     from .index import WikiIndex
     from .llm import LlamaClient, LLMError
 
-    idx = WikiIndex.load(s.index_dir, _embedder(s))
-    llm = LlamaClient(s.classifier_url, s.classifier_model, s.llm_api_key)
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # Accuracy summaries should not be buried in per-request logs.
+    idx = None if args.evidence_url or args.raw_model else WikiIndex.load(s.index_dir, _embedder(s))
+    llm = LlamaClient(args.classifier_url or s.classifier_url, s.classifier_model, s.llm_api_key)
     data = json.loads((ROOT / "data" / "eval_messages.json").read_text(encoding="utf-8"))
+    cases = [(label, msg, "held_out") for label in ("game", "general") for msg in data[label]]
+    if args.include_mixed:
+        extra = json.loads((ROOT / "data" / "eval_mixed_messages.json").read_text(encoding="utf-8"))
+        cases.extend((label, msg, "mixed_intent") for label in ("game", "general") for msg in extra[label])
+    remote = httpx.AsyncClient(base_url=args.evidence_url or "http://unused",
+                              headers={"X-Api-Key": s.api_key}, timeout=15)
 
     async def evidence(q):
-        return idx.search(q, 1)[1]
+        if args.evidence_url:
+            response = await remote.post("/v1/search", json={"query": q, "k": s.top_k})
+            response.raise_for_status()
+            return response.json()["best_dense"]  # Use the deployed wiki without changing any remote settings.
+        return (await asyncio.to_thread(idx.search, q, s.top_k))[1]
 
     async def ask(q):
         if args.wiki_only:
             return None
         try:
-            return parse_verdict(await llm.chat([{"role": "system", "content": CLASSIFY_PROMPT},
-                                                 {"role": "user", "content": q}],
-                                                max_tokens=4, temperature=0, timeout=s.classifier_timeout))
-        except LLMError as exc:
-            print("  classifier failed:", exc)
+            return parse_verdict(await asyncio.wait_for(llm.chat(classifier_messages(q), grammar=CLASSIFY_GRAMMAR,
+                                                max_tokens=4, temperature=0, timeout=s.classifier_timeout),
+                                                timeout=s.classifier_timeout))
+        except (LLMError, asyncio.TimeoutError):
             return None
 
     async def run():
-        wrong, methods, total = [], {}, 0
-        for label in ("game", "general"):
-            for msg in data[label]:
-                v = await classify(msg, ask_llm=ask, evidence=evidence, wiki_evidence=s.rag_game_evidence)
-                total += 1
-                methods[v.method] = methods.get(v.method, 0) + 1
-                if v.category != label:
-                    wrong.append((label, v.method, msg))
-        await llm.aclose()
-        return wrong, methods, total
+        rows = []
+        try:
+            identity = await llm.model_identity()
+            for label, msg, dataset in cases:
+                start = time.perf_counter()
+                row = {"expected": label, "message": msg, "dataset": dataset}
+                try:
+                    if args.raw_model:
+                        row.update(category=await ask(msg), method="raw_model")
+                    else:
+                        row.update((await classify(msg, ask_llm=ask, evidence=evidence,
+                                                   wiki_evidence=s.rag_game_evidence)).to_dict())
+                except Exception as exc:
+                    row.update(category=None, method="error", error=type(exc).__name__)  # Failed requests count as wrong.
+                row["ms"] = round((time.perf_counter() - start) * 1000)
+                rows.append(row)
+            return {"policy": CLASSIFIER_REVISION, "model_identity": identity,
+                    "classifier_url": args.classifier_url or s.classifier_url, "evidence_url": args.evidence_url,
+                    "wiki_evidence": s.rag_game_evidence, "raw_model": args.raw_model, "wiki_only": args.wiki_only,
+                    "summary": summarize(rows),
+                    "datasets": {name: summarize([row for row in rows if row["dataset"] == name])
+                                 for name in sorted({row["dataset"] for row in rows})}, "results": rows}
+        finally:
+            await llm.aclose()
+            await remote.aclose()
 
-    wrong, methods, total = asyncio.run(run())
-    print(f"accuracy {total - len(wrong)}/{total} = {(total - len(wrong)) / total:.1%}   decided by {methods}")
-    for label, method, msg in wrong:
-        print(f"  expected {label:7} ({method}): {msg}")
-    return 0
+    report = asyncio.run(run())
+    print(json.dumps(report["summary"], indent=2))
+    for row in report["results"]:
+        if row.get("category") != row["expected"]:
+            print(f"  expected {row['expected']:7} ({row.get('category')}/{row['method']}): {row['message']}")
+    if args.output:
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        print("Artifact:", output)
+    return 0 if all(item["accuracy"] is not None and item["accuracy"] >= args.min_class_accuracy
+                    for item in report["summary"]["by_class"].values()) else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -114,12 +150,20 @@ def main(argv: list[str] | None = None) -> int:
 
     e = sub.add_parser("eval", help="classifier accuracy on data/eval_messages.json")
     e.add_argument("--wiki-only", action="store_true", help="skip the classifier model; wiki score only")
+    e.add_argument("--raw-model", action="store_true", help="measure model decisions without social shortcuts or wiki overrides")
+    e.add_argument("--classifier-url", help="test another model endpoint without changing the service environment")
+    e.add_argument("--evidence-url", help="use /v1/search on this RAG base URL instead of the local wiki index")
+    e.add_argument("--include-mixed", action="store_true", help="also check greeting-plus-mechanics and emotional messages")
+    e.add_argument("--output", help="write per-message decisions, timing and accuracy to a JSON artifact")
+    e.add_argument("--min-class-accuracy", type=float, default=0.9, help="required accuracy for EACH class (default: 0.9)")
 
     gm = sub.add_parser("gm-build-index", help="build the separate GM handbook index")
     gm.add_argument("--source", help="GM wiki folder or URL (default: GM_WIKI_SOURCE)")
     sub.add_parser("gm-serve", help="run the staff handbook service on GM_PORT (9093)")
 
     args = p.parse_args(argv)
+    if args.cmd == "eval" and (args.raw_model and args.wiki_only or not 0 <= args.min_class_accuracy <= 1):
+        p.error("eval needs a threshold from 0 to 1; --raw-model and --wiki-only cannot be combined")
     if args.cmd.startswith("gm-"):
         from .gm import load_gm_settings, build_gm_index, create_gm_app
         settings = load_gm_settings()

@@ -160,8 +160,9 @@ class LlamaClient:
         self._model = model
         self._slots = asyncio.Semaphore(max(1, concurrency))  # Never hold more llama.cpp slots than configured.
 
-    async def chat(self, messages: list[dict], *, max_tokens: int, temperature: float, timeout: float) -> str:
-        """Send one non-streaming chat request and return the assistant text with any reasoning removed."""
+    async def chat(self, messages: list[dict], *, max_tokens: int, temperature: float, timeout: float,
+                   grammar: str | None = None) -> str:
+        """Send one non-streaming chat request, optionally constraining classifier output with a grammar."""
         body = {
             "model": self._model,
             "messages": messages,
@@ -170,6 +171,8 @@ class LlamaClient:
             "stream": False,
             "chat_template_kwargs": {"enable_thinking": False},  # Qwen3 thinking would burn the token budget before replying.
         }
+        if grammar is not None:
+            body["grammar"] = grammar  # Reply generation remains unconstrained unless explicitly requested.
         try:
             async with self._slots:
                 r = await self._client.post("/v1/chat/completions", json=body, timeout=timeout)
@@ -181,6 +184,16 @@ class LlamaClient:
         if not text:
             raise LLMError("llama.cpp returned an empty reply")
         return text
+
+    async def model_identity(self) -> str | None:
+        """Read the advertised model ID so cached labels can be invalidated after a hot swap."""
+        try:
+            response = await self._client.get("/v1/models", timeout=2)
+            response.raise_for_status()
+            models = response.json()["data"]
+            return "|".join(sorted(item["id"] for item in models)) or None
+        except (httpx.HTTPError, KeyError, TypeError, ValueError):
+            return None  # Unknown identity disables cache reuse instead of trusting potentially stale decisions.
 
     async def health(self) -> bool:
         """True when llama.cpp answers /health (or /v1/models on older builds)."""
