@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-14T19:23:29.211947+00:00",
+  "purpose": "Draft examples for gameplay-versus-social routing; no answers or model training.",
+  "counts": {
+    "game": 60,
+    "general": 60
+  },
+  "total": 120,
+  "families": 60,
+  "topics": 12,
+  "wiki_sha256": {
+    "getting-started": "3699cad2222519067962d190788b748b0e6cf7212630d739f74b4f5b05193848",
+    "controls": "82369a52736fd28095ad1aa0d09b6057b2de35f5be584ced2565d0a2d497ec55",
+    "combat": "a0c346335dbff8bd5530109e84244473d6b1f1f618bb6150b854a3eb6ce49a60",
+    "needs-and-care": "29f0014fc0356dac68c46f9138705341c4c541e2d3fa1cfb565ca12a2c0e5986",
+    "items-and-economy": "09edc23fbfffd9314e9ddc18fb665f4af4262ab0cba303e098d22828345a4f2c",
+    "player-shops": "0b4fd9a78199e847ff095bada791b346efa0398bec64f97568b2cdddf0ac4752",
+    "gathering": "3c3d74ee18d802a57ae489b7b4d63039748edf9977559963fd01ac33a532e4bb",
+    "crafting": "f3af5678fef27587aa33576061005d1dd5b9c52ef6f27e8727d9f1dbb3efe311",
+    "world-and-dungeons": "f83f39aa0314215c109b56b68411c259abe913fc33416148823fa269a6fcf959",
+    "quests-and-faith": "004abaf258669893feacb12c1a8e41615d723293c6577c49a668575e85a5589c",
+    "multiplayer": "ebe61b88a3f26f2c9f797ef9c5d4f8eb50edceefe72082da210c07dfd202fbaf",
+    "saving-and-help": "d195806b27c9e05a34dbb363cad89b5c157e982ec3d516d2be9bbc015a9f4ccf"
+  },
+  "evaluation_sha256": {
+    "eval_messages.json": "9692937eaf2de251cc8d134d497d57ae41d6743242d54da0965b4012db632ed3",
+    "eval_mixed_messages.json": "c9bf7c0d1a4f5b8359440b7ac338e7e0fe852bf293e74cfafc2eb1589d2fd530"
+  },
+  "evaluation_overlap_normalized": 0,
+  "player_logs_used": false,
+  "independent_label_review": false,
+  "training_ready": false,
+  "notes": [
+    "Metadata and labels must never become part of classifier input.",
+    "Keep families and all derived paraphrases in the same future split.",
+    "Topic provenance does not assert that every premise is true or answerable.",
+    "Normalized exclusion is not a semantic leakage check; review near-duplicates separately.",
+    "This starter covers game-related topics; add diverse ordinary chat before training."
+  ],
+  "dataset_sha256": "5be9dfc22393540ce28878997a779dd2a1b97ab5aa2933f4df38e0d47dfe3445"
+}

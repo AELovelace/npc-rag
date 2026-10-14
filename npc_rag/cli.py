@@ -82,8 +82,10 @@ def cmd_eval(s, args) -> int:
         if args.evidence_url:
             response = await remote.post("/v1/search", json={"query": q, "k": s.top_k})
             response.raise_for_status()
-            return response.json()["best_dense"]  # Use the deployed wiki without changing any remote settings.
-        return (await asyncio.to_thread(idx.search, q, s.top_k))[1]
+            found = response.json()  # Use the deployed wiki without changing any remote settings.
+            return {"dense": found["best_dense"], "coverage": found.get("keyword_coverage")}  # Older services omit coverage.
+        _, best, coverage = await asyncio.to_thread(idx.search_evidence, q, s.top_k)
+        return {"dense": best, "coverage": coverage}
 
     async def ask(q):
         if args.wiki_only:
@@ -106,8 +108,9 @@ def cmd_eval(s, args) -> int:
                     if args.raw_model:
                         row.update(category=await ask(msg), method="raw_model")
                     else:
-                        row.update((await classify(msg, ask_llm=ask, evidence=evidence,
-                                                   wiki_evidence=s.rag_game_evidence)).to_dict())
+                        row.update((await classify(msg, ask_llm=ask, evidence=evidence, wiki_evidence=s.rag_game_evidence,
+                                                   keyword_coverage=s.rag_keyword_coverage,
+                                                   keyword_dense=s.rag_keyword_dense)).to_dict())
                 except Exception as exc:
                     row.update(category=None, method="error", error=type(exc).__name__)  # Failed requests count as wrong.
                 row["ms"] = round((time.perf_counter() - start) * 1000)
@@ -116,7 +119,8 @@ def cmd_eval(s, args) -> int:
                     "classifier_url": s.classifier_url if s.classifier_backend == "llamacpp" else None,
                     "classifier": llm.view() if llm is not None else {"backend": "wiki-only"},
                     "evidence_url": args.evidence_url,
-                    "wiki_evidence": s.rag_game_evidence, "raw_model": args.raw_model, "wiki_only": args.wiki_only,
+                    "wiki_evidence": s.rag_game_evidence, "keyword_coverage": s.rag_keyword_coverage,
+                    "keyword_dense": s.rag_keyword_dense, "raw_model": args.raw_model, "wiki_only": args.wiki_only,
                     "summary": summarize(rows),
                     "datasets": {name: summarize([row for row in rows if row["dataset"] == name])
                                  for name in sorted({row["dataset"] for row in rows})}, "results": rows}

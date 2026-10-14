@@ -282,6 +282,7 @@ def test_search_endpoint(settings, embedder, index, llama, clf):
     assert body["results"][0]["id"] == "needs#cursed-equipment:0"
     assert body["results"][0]["url"] == "https://wiki.test/wiki/#/needs/cursed-equipment"
     assert body["relevant"] is True
+    assert 0 < body["keyword_coverage"] <= 1  # Classification reuses this keyword evidence.
 
 
 def test_reindex_from_local_folder(settings, embedder, index, llama, clf):

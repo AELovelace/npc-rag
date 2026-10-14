@@ -46,3 +46,13 @@ class BM25:
                     s += self.idf[t] * tf * (self.k1 + 1) / norm
             out.append(s)
         return out
+
+    def coverage(self, query: str, doc: int) -> float:
+        """Share of the query's word weight (IDF) that one document contains: 1.0 means every meaningful word matched."""
+        terms = set(tokenize(query))
+        if not terms or not self.docs:
+            return 0.0  # Stopword-only queries ("how are you") carry no keyword evidence.
+        unseen = math.log(1 + (len(self.docs) + 0.5) / 0.5)  # A word the wiki never uses counts at full rarity weight.
+        total = sum(self.idf.get(t, unseen) for t in terms)  # Off-topic words ("everest", "pizza") pull coverage down.
+        found = sum(self.idf[t] for t in terms if self.docs[doc].get(t))  # Words this document actually contains.
+        return found / total

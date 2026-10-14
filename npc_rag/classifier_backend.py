@@ -10,15 +10,8 @@ from pathlib import Path
 
 from .classifier import CLASSIFY_GRAMMAR, GAME, GENERAL, classifier_messages, parse_verdict
 from .config import ROOT
+from .decider_policy import DECIDER_LABELS, DECIDER_OPTIONS, DECIDER_POLICY, DECIDER_QUESTION
 from .llm import LlamaClient, LLMError
-
-DECIDER_POLICY = "game-chat-v2"  # Revision participates in cache identity and evaluation reports.
-DECIDER_QUESTION = "Is the player asking for gameplay help, or having a social conversation?"
-DECIDER_OPTIONS = (
-    "Gameplay help: rules, controls, equipment, quests or mechanics",
-    "Social conversation: feelings, jokes, preferences or character chat",
-)
-DECIDER_LABELS = dict(zip(DECIDER_OPTIONS, (GAME, GENERAL)))  # Score descriptions, then map to API categories.
 
 
 class ChatClassifier:

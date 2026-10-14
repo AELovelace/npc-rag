@@ -118,8 +118,9 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
     guard = Depends(api_key_guard(settings.api_key))
 
     async def search(query: str, k: int) -> dict:
-        hits, best = await asyncio.to_thread(state["index"].search, query, k)  # Embedding is CPU work: keep the loop free.
-        return {"query": query, "best_dense": round(best, 4), "relevant": best >= settings.min_relevance,
+        hits, best, coverage = await asyncio.to_thread(state["index"].search_evidence, query, k)  # Embedding is CPU work: keep the loop free.
+        return {"query": query, "best_dense": round(best, 4), "keyword_coverage": round(coverage, 4),
+                "relevant": best >= settings.min_relevance,
                 "results": [h.to_dict() for h in hits]}
 
     classifier_identity, identity_checked = None, float("-inf")
@@ -161,8 +162,9 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
         """Classify; the wiki fallback's search result is kept so a game answer can reuse it."""
         async def evidence(q: str) -> float | None:
             cache["search"] = await search(q, settings.top_k)
-            return cache["search"]["best_dense"]
-        return await classify(text, ask_llm=ask_classifier, evidence=evidence, wiki_evidence=settings.rag_game_evidence)
+            return {"dense": cache["search"]["best_dense"], "coverage": cache["search"]["keyword_coverage"]}
+        return await classify(text, ask_llm=ask_classifier, evidence=evidence, wiki_evidence=settings.rag_game_evidence,
+                              keyword_coverage=settings.rag_keyword_coverage, keyword_dense=settings.rag_keyword_dense)
 
     @app.get("/health")
     async def health():
@@ -305,8 +307,8 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
                 seen.add(h["url"])
                 sources_out.append({"title": h["page_title"], "section": h["heading"], "url": h["url"], "score": h["dense"]})
 
-        log.info("%s %s/%s %s %dms: %r", req.player_id or "-", verdict.category, verdict.method, guard_verdict,
-                 timings["total"], message[:80])
+        log.info("%s %s/%s %s %dms [%s]: %r", req.player_id or "-", verdict.category, verdict.method, guard_verdict,
+                 timings["total"], verdict.brief(), message[:80])  # Scores let reviewers find model/wiki disagreements to label.
         return {
             "reply": reply,
             "npc_name": npc_name,

@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from npc_rag.bm25 import BM25, tokenize
-from npc_rag.classifier import GAME, GENERAL, classify, parse_verdict
+from npc_rag.classifier import GAME, GENERAL, Verdict, classify, parse_verdict
 from npc_rag.embedder import HashEmbedder
 from npc_rag.index import WikiIndex
 
@@ -16,6 +16,22 @@ def test_bm25_prefers_matching_document():
     bm = BM25(["toilets and outhouses", "cursed items and the cursebreaker"])
     s = bm.scores("cursebreaker")
     assert s[1] > 0 and s[0] == 0
+
+
+def test_bm25_coverage_weighs_rare_and_unknown_words():
+    bm = BM25(["toilets and outhouses", "cursed items and the cursebreaker", "cursed boots"])
+    assert bm.coverage("where is the cursebreaker", 1) == pytest.approx(1.0)  # Every meaningful word matched.
+    assert 0 < bm.coverage("cursebreaker everest", 1) < 0.5  # An unknown word outweighs even the rarest wiki word.
+    assert 0 < bm.coverage("cursed cursebreaker", 2) < 0.5  # The common word matched, the rare one didn't.
+    assert bm.coverage("how are you", 1) == 0.0  # Stopwords only: no keyword evidence.
+
+
+def test_search_evidence_reports_keyword_coverage(index):
+    hits, best, coverage = index.search_evidence("cursebreaker", 3)
+    plain_hits, plain_best = index.search("cursebreaker", 3)
+    assert [h.chunk.id for h in hits] == [h.chunk.id for h in plain_hits] and best == plain_best
+    assert coverage == pytest.approx(1.0)
+    assert index.search_evidence("zzzz qqqq", 3)[2] == 0.0  # No shared words at all.
 
 
 def test_search_finds_the_right_section(index):
@@ -54,6 +70,32 @@ def test_strong_wiki_match_overrides_chat():
     v = _run(GENERAL, 0.9)
     assert (v.category, v.method) == (GAME, "wiki")
     assert _run(GAME, 0.9).method == "llm"
+
+
+def _run_keyword(answer, dense, coverage, *, rule=(0.5, 0.4)):
+    async def ask(_):
+        return answer
+
+    async def evidence(_):
+        return {"dense": dense, "coverage": coverage}
+
+    return asyncio.run(classify("purple banana", ask_llm=ask, evidence=evidence, wiki_evidence=0.5,
+                                keyword_coverage=rule[0] if rule else None, keyword_dense=rule[1] if rule else None))
+
+
+def test_keyword_coverage_lowers_the_override_bar():
+    v = _run_keyword(GENERAL, 0.45, 0.8)  # Below RAG_GAME_EVIDENCE, but the wiki holds most of the wording.
+    assert (v.category, v.method) == (GAME, "wiki")
+    assert v.scores == {"llm": GENERAL, "wiki_best": 0.45, "wiki_keyword": 0.8}
+    assert _run_keyword(GENERAL, 0.45, 0.3).category == GENERAL  # Too little of the message is in the wiki.
+    assert _run_keyword(GENERAL, 0.35, 0.9).category == GENERAL  # Coverage never overrides a weak dense score.
+    assert _run_keyword(GENERAL, 0.45, 0.9, rule=None).category == GENERAL  # Unset thresholds disable the rule.
+    assert _run_keyword(None, 0.45, 0.8).category == GAME  # Also the fallback while the model is down.
+
+
+def test_verdict_brief_for_log_lines():
+    assert Verdict(GAME, "wiki", {"llm": GENERAL, "wiki_best": 0.71234, "wiki_keyword": 0.5}).brief() ==         "llm=general wiki_best=0.7123 wiki_keyword=0.5"
+    assert Verdict(GAME, "caller").brief() == "-"
 
 
 def test_wiki_score_decides_when_the_model_is_down():

@@ -120,6 +120,8 @@ class Settings:
     decider_threads: int = 4             # CPU threads for the single native inference worker.
     decider_gpu_layers: int = 0          # CPU by default; -1 offloads all layers with a compatible build.
     decider_context: int = 4096          # Entire prompt capacity, including the decision instructions.
+    rag_keyword_coverage: float = 0.5    # Share of a message's meaningful words one wiki chunk must hold for the keyword rule; above 1 disables it.
+    rag_keyword_dense: float = 0.62      # Wiki score the keyword rule still requires (below RAG_GAME_EVIDENCE, above unrelated chat).
 
     def __post_init__(self):
         if self.classifier_backend not in ("llamacpp", "decider"):
@@ -130,6 +132,9 @@ class Settings:
             raise ValueError("DECIDER_THREADS must be 1-64 and DECIDER_GPU_LAYERS must be -1 through 256")
         if not 2048 <= self.decider_context <= 32768:
             raise ValueError("DECIDER_CONTEXT must be 2048-32768 tokens")
+        if not (math.isfinite(self.rag_keyword_coverage) and math.isfinite(self.rag_keyword_dense)
+                and 0 < self.rag_keyword_coverage and 0 <= self.rag_keyword_dense <= 1):
+            raise ValueError("RAG_KEYWORD_COVERAGE must be above 0 (above 1 disables it) and RAG_KEYWORD_DENSE must be 0-1")
 
 
 def load_settings(env_file: str | None = None) -> Settings:
@@ -193,4 +198,6 @@ def load_settings(env_file: str | None = None) -> Settings:
         decider_threads=_env_int("DECIDER_THREADS", 4),
         decider_gpu_layers=_env_int("DECIDER_GPU_LAYERS", 0),
         decider_context=_env_int("DECIDER_CONTEXT", 4096),
+        rag_keyword_coverage=_env_float("RAG_KEYWORD_COVERAGE", 0.5),
+        rag_keyword_dense=_env_float("RAG_KEYWORD_DENSE", 0.62),
     )

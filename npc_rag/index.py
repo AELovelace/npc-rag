@@ -80,6 +80,11 @@ class WikiIndex:
 
     def search(self, query: str, k: int = 4) -> tuple[list[Hit], float]:
         """Top k chunks by fused dense + keyword rank, plus the best dense score over the whole wiki."""
+        hits, best, _ = self.search_evidence(query, k)
+        return hits, best  # Callers that only need retrieval keep the original two-value result.
+
+    def search_evidence(self, query: str, k: int = 4) -> tuple[list[Hit], float, float]:
+        """search() plus keyword coverage: how much of the query's meaningful wording the best BM25 chunk contains."""
         qv = self.embedder.queries([query])[0]
         dense = self.vectors @ qv                                   # Cosine similarity with every chunk.
         keyword = np.array(self.bm25.scores(query), dtype=np.float32)
@@ -94,4 +99,6 @@ class WikiIndex:
 
         order = np.argsort(-fused)[:k]
         hits = [Hit(self.chunks[i], float(dense[i]), float(keyword[i]), float(fused[i])) for i in order]
-        return hits, float(dense.max())  # Best dense = how strongly the wiki talks about this question at all.
+        top = int(keyword.argmax())                                 # Chunk sharing the most weighted words with the query.
+        coverage = self.bm25.coverage(query, top) if keyword[top] > 0 else 0.0  # No shared words: no keyword evidence.
+        return hits, float(dense.max()), coverage  # Best dense = how strongly the wiki talks about this question at all.

@@ -1,0 +1,13 @@
+# Separate training environment, Python 3.11/3.12. Install CUDA torch first using the helper.
+torch==2.10.0
+transformers==5.19.0
+peft==0.21.2
+accelerate==1.15.0
+bitsandbytes==0.50.2
+decider-ai==1.9.0
+huggingface-hub==2.2.0
+tokenizers==0.23.3
+safetensors==0.8.0
+numpy==2.4.6
+flash-linear-attention==0.5.2
+fla-core==0.5.2

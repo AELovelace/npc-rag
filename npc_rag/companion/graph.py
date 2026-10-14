@@ -43,6 +43,7 @@ class CompanionState(TypedDict, total=False):
     player_name: str
     category: str
     method: str
+    scores: str                               # Classifier signals for the log line (Verdict.brief()).
     cache: dict                               # The classifier's wiki search, reused by the wiki node.
     notes: list[dict]
     hits: list[dict]
@@ -76,7 +77,8 @@ def build_companion_graph(settings, state: dict, *, search, classify_with_search
             verdict = Verdict(GAME if req.category == "game" else GENERAL, "caller")  # The game server already knows.
         else:
             verdict = await classify_with_search(s["message"], cache)
-        return {"category": verdict.category, "method": verdict.method, "cache": cache, "timings": {"classify": _ms(t0)}}
+        return {"category": verdict.category, "method": verdict.method, "scores": verdict.brief(),
+                "cache": cache, "timings": {"classify": _ms(t0)}}
 
     async def wiki(s: CompanionState) -> dict:
         if s["category"] != GAME:

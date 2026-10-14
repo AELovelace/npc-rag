@@ -10,6 +10,7 @@ from importlib.metadata import PackageNotFoundError, version
 import json
 from pathlib import Path
 import platform
+import statistics
 import sys
 import time
 
@@ -48,6 +49,52 @@ CONTROLS = [
     ("The object is a ripe banana.", "Is this a fruit?", ["yes", "no"], "yes"),
     ("The object is a metal spanner.", "Is this a fruit?", ["yes", "no"], "no"),
 ]
+GAME_SETTING = (
+    "The speaker is a player talking to an NPC inside the fantasy role-playing game LiDollQuest. "
+    "The player may ask about the game world and its systems or simply socialize with the NPC."
+)  # Supply the application setting without inserting answers or rules for individual failed cases.
+CONTEXT_CASES = [
+    ("GAME", "What is the Order of the Silver Bell?"),
+    ("CHAT", "The Order of the Silver Bell sounds like a lovely name."),
+    ("GAME", "Can the ferry carry my mount?"),
+    ("CHAT", "Would you enjoy a quiet ferry ride with me?"),
+    ("GAME", "When does the library unlock?"),
+    ("CHAT", "Libraries always make me feel peaceful."),
+    ("GAME", "What does this purple meter measure?"),
+    ("CHAT", "Purple is my favorite color. What is yours?"),
+    ("GAME", "Hello darling, can I repair a damaged fishing rod?"),
+    ("CHAT", "Hello darling, tell me a funny fishing story."),
+    ("GAME", "I'm frustrated. How do I cancel a crafting job?"),
+    ("CHAT", "I'm frustrated. Could you cheer me up?"),
+    ("GAME", "Can an antidote remove this poison effect?"),
+    ("CHAT", "That poison swamp looked spooky. Will you keep me company?"),
+    ("GAME", "How many companions can travel with me?"),
+    ("CHAT", "You're my favorite traveling companion."),
+]  # Paired factual/social development probes; never append these to the fixed evaluation gate.
+
+
+def compare_game_context(model, context):
+    rows = []
+    mapping = dict(zip(DECIDER_OPTIONS, ("GAME", "CHAT")))
+    for index, (expected, message) in enumerate(CONTEXT_CASES):
+        variants = (False, True) if index % 2 == 0 else (True, False)
+        for with_setting in variants:  # Alternate order to reduce a consistent first-call timing advantage.
+            state = {"setting": GAME_SETTING, "message": message} if with_setting else {"message": message}
+            row = {"group": "with_game_context" if with_setting else "current_policy",
+                   "state": json.dumps(state, ensure_ascii=False), "expected": expected,
+                   "question": DECIDER_QUESTION, "options": list(DECIDER_OPTIONS)}
+            start = time.perf_counter()
+            try:
+                result = model.decide(row["state"], [{"question": row["question"], "options": row["options"]}],
+                                      max_ctx_tokens=context - 1024)[0]
+                row.update(result=result, predicted=mapping[result["choice"]])
+                row["correct"] = row["predicted"] == expected
+            except Exception as exc:
+                row.update(error=type(exc).__name__, correct=False)
+            row["ms"] = round((time.perf_counter() - start) * 1000)
+            rows.append(row)
+            print(json.dumps(row, ensure_ascii=False), flush=True)
+    return rows  # One experimental variable: extra application context in the JSON state.
 
 
 def package_versions():
@@ -103,7 +150,7 @@ async def run(args):
     backend = DeciderClassifier(settings)
     report = {"started_at": datetime.now(timezone.utc).isoformat(), "python": platform.python_version(),
               "platform": platform.platform(), "packages": package_versions(), "backend": backend.view(),
-              "held_out_cases_used": False}
+              "held_out_cases_used": False, "game_context_comparison": args.game_context}
     try:
         await backend.start()
         model = backend._model  # Diagnostic-only inspection of the same loader used by production.
@@ -128,13 +175,19 @@ async def run(args):
         report["readout"]["example_prompt"] = model.m.tok.decode(items[0]["ids"])
         report["readout"]["example_slots"] = items[0]["slots"]  # Verify that logits are requested at the answer marker.
         # The same worker owns all probes. This separate process has no access to the live cache/context.
-        report["results"] = await backend._native(lambda: investigate(model, settings.decider_context))
+        compare = compare_game_context if args.game_context else investigate
+        report["results"] = await backend._native(lambda: compare(model, settings.decider_context))
         groups = sorted({row["group"] for row in report["results"]})
         report["summary"] = {}
         for group in groups:
             rows = [row for row in report["results"] if row["group"] == group]
             report["summary"][group] = {"correct": sum(row["correct"] for row in rows), "total": len(rows),
-                                        "predicted": dict(Counter(row.get("predicted", "error") for row in rows))}
+                                        "predicted": dict(Counter(row.get("predicted", "error") for row in rows)),
+                                        "median_ms": statistics.median(row["ms"] for row in rows),
+                                        "by_class": {label: {
+                                            "correct": sum(row["correct"] for row in rows if row["expected"] == label),
+                                            "total": sum(row["expected"] == label for row in rows)}
+                                            for label in sorted({row["expected"] for row in rows})}}
     finally:
         await backend.aclose()
         output = Path(args.output)
@@ -142,12 +195,16 @@ async def run(args):
         output.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
         print("Artifact:", output.resolve(), flush=True)  # Synthetic inputs only; no API keys or player logs.
     print(json.dumps(report["summary"], indent=2), flush=True)
-    return 0 if all(row["correct"] for row in report["results"] if row["group"].startswith("control")) else 1
+    checked = report["results"] if args.game_context else [
+        row for row in report["results"] if row["group"].startswith("control")]
+    return 0 if all(row["correct"] for row in checked) else 1  # Diagnostic exit status is not the release accuracy gate.
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-file", help="use the same RAG environment file as the running service")
+    parser.add_argument("--game-context", action="store_true",
+                        help="compare current policy with explicit RPG setting on 16 separate development cases")
     parser.add_argument("--output", default="artifacts/decider-diagnostic.json")
     return asyncio.run(run(parser.parse_args()))
 

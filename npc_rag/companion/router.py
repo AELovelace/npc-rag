@@ -152,9 +152,9 @@ def companion_router(settings, state: dict, *, search, classify_with_search, gen
             raise HTTPException(503, "the reply model is unavailable on this node") from exc  # Lets the game server's pool try the other node.
         timings = {**out.get("timings", {}), "total": int((time.perf_counter() - t0) * 1000)}
         lore_ids = [sec.id for sec, _ in out.get("lore", [])]
-        log.info("companion %s %s/%s %s lore=%s mem=%d gossip=%s slip=%s %dms: %r", req.npc_id, out["category"], out["method"],
+        log.info("companion %s %s/%s %s lore=%s mem=%d gossip=%s slip=%s %dms [%s]: %r", req.npc_id, out["category"], out["method"],
                  out["guard"], lore_ids, len(out.get("memories", [])), bool(out.get("gossip")), out.get("slipped"),
-                 timings["total"], message[:80])
+                 timings["total"], out.get("scores", "-"), message[:80])  # Scores make model/wiki disagreements reviewable.
         return {
             "reply": out["reply"],
             "npc_name": npc_name,

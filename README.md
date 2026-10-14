@@ -1,6 +1,135 @@
 # npc-rag: the LiDollQuest tutorial NPC
 
+## First classifier training pass: 1,000 synthetic rows (2026-10-14)
+
+Validated locally on the RTX 3080 10 GB: isolated installation and dependency checks passed;
+the real Mapika 2B v11 QLoRA smoke test completed two optimizer steps, produced nonzero gradients,
+and saved/reloaded matching predictions. Peak PyTorch allocated memory was **2.78 GiB** for the
+eight-row smoke test (not total device memory). Artifact: `runs/classifier-20261014T194210030442Z/`.
+All 1,000 production-format prompts tokenize within 83 tokens. A separate tiny Qwen3.5 test verifies
+restricted A/B logits match full-model logits and adapter parameters update correctly. The ordinary
+suite passes 150 tests; its optional native test runs separately in `.venv-train`. The full two-epoch
+training pass and classifier accuracy improvement are still pending.
+
+`data/classifier/synthetic-pilot-v1.jsonl` expands the starter to **1,000 rows, 500 GAME / 500 CHAT**.
+There are **250 paired intent families**: 500 authored messages plus 500 explicitly marked
+conversational-prefix variants. This is not 1,000 independent intents. Each family stays together:
+**800 training / 100 validation / 100 test**, balanced within every split. The builder also keeps
+textually similar families together, rejects normalized duplicates and excludes the fixed 96-message
+evaluation suite. Source wiki and dataset hashes are recorded in the adjacent manifest. No player
+logs were copied. New labels remain synthetic drafts, suitable for an experimental pass rather than
+a claim of independently reviewed ground truth; the authoring script makes that status explicit.
+
+The first runner targets an **NVIDIA RTX 3080 / 10 GB** with NF4 QLoRA, rank 8, BF16 computation,
+one message per microbatch, accumulation 16, 384-token maximum prompts and two epochs. It trains
+only adapters using cross-entropy on Decider's A/B option logits at the answer slot. The prompt and
+described options come from the same dependency-free policy module as production; JSON contains
+only the message. Training shuffles option order with corresponding target remapping, while
+validation/test keep production's order. Inputs are rejected rather than silently truncated.
+The full vocabulary logits are not materialized. No llama-cpp-python build is needed for training.
+The base checkpoint is pinned to Mapika's v11 revision `ff99089b6810691bd79134ec6febb5d9afa6e619`.
+On this Windows setup, linear-attention/causal-convolution operations use correct reference PyTorch
+kernels; their optimization warnings are expected. A working smoke test does not require compiling
+those optional kernels. Training speed has not been benchmarked for a full epoch.
+
+From this checkout in PowerShell (Python 3.11 or 3.12):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ps/Install-ClassifierTraining.ps1
+powershell -ExecutionPolicy Bypass -File ps/Train-Classifier.ps1 -SmokeTest
+powershell -ExecutionPolicy Bypass -File ps/Train-Classifier.ps1
+```
+
+The installer creates **`.venv-train`**, separate from RAG's `.venv`, and pins CUDA PyTorch and
+training dependencies. To choose a different base Python, pass `-Python C:\path\to\python.exe`.
+Stop other GPU model workloads yourself if needed before training; the scripts do not terminate
+them. CUDA/PyTorch compatibility and actual peak memory must be verified by the smoke test on
+each machine. The AMD cards are not configured by this first-pass runner.
+
+The smoke test does two optimizer steps on eight training rows, verifies finite loss/nonzero
+adapter gradients, then saves and reloads the adapter and compares validation probabilities.
+It downloads the original trainable checkpoint on first use (several GB) into ignored
+`data/models/training`, not the Q4_K_M GGUF. Full training selects the best epoch using validation
+per-class recall, accuracy and loss, then evaluates the selected saved adapter once on the
+synthetic test partition. The fixed 96-message gate and real player questions remain outside training.
+
+Each run gets a fresh ignored directory under **`runs/`**. It contains the exact base revision,
+package versions, data hash and routing policy in `run.json`; baseline/epoch validation reports;
+loss/memory records in `training-metrics.jsonl`; `best-adapter/`; and, after full training,
+`final-test.json`. Completion records whether validation improved over the starting checkpoint.
+Existing output directories are refused. A successful process means training completed, not that
+the classifier passed accuracy gates. The synthetic test report includes the existing 90%-per-class
+gate; synthetic success still needs verification on reviewed real inputs.
+
+The result is an **experimental LoRA adapter**, not a deployable GGUF. Merge it into the recorded
+base checkpoint, check/refit calibration, evaluate the unchanged accuracy suite, quantize and
+evaluate the quantized model before replacing a RAG model. Training does not edit `.env`, start
+services, upload weights or deploy the adapter. This domain-only pass has no generic-task replay;
+do not assume it preserves Decider's unrelated decision skills.
+
+Data-only validation works without GPU dependencies:
+
+```powershell
+.venv\Scripts\python.exe python/train_classifier.py --check-data
+# Regenerate the same grouped split from the authored sources:
+.venv\Scripts\python.exe python/build_classifier_dataset.py --wiki-root C:\Users\langley\GameMakerProjects\lidollquest\web\wiki
+```
+
+## Synthetic classifier seed (2026-10-14)
+
+`data/classifier/synthetic-seed-v1.jsonl` contains **120 draft examples**, balanced 60 `game` /
+60 `general`, in 60 contrasting pairs across the 12 player-wiki topics. Both labels use similar
+subject vocabulary: requests for rules or game facts are GAME; social remarks, personal preferences,
+stories and reassurance are CHAT. Mixed emotional/greeting-plus-gameplay requests remain GAME.
+These are assistant-authored messages, not copied player conversations or generated NPC answers.
+Labels are proposed and every row is `needs_review`; no training or deployment has been performed.
+
+Regenerate the seed and provenance manifest from the checked-in authoring script:
+
+```powershell
+.venv\Scripts\python.exe python/build_classifier_seed.py --wiki-root C:\Users\langley\GameMakerProjects\lidollquest\web\wiki
+```
+
+The builder checks message limits, normalized duplicates and exact normalized overlap with both
+fixed evaluation files; it records hashes of those files, source wiki pages and the output dataset.
+This is not a semantic leakage check or independent label review. Metadata (`label`, `family_id`,
+`topic`, source page, review status) must stay outside model inputs. Keep each family and any derived
+paraphrases together in future data splits, and review semantic duplicates across families too.
+Train the same message/context representation that the service will actually supply.
+
+Suggested experiment, not a proven data requirement: review this seed, grow to 500-1,000 varied
+training examples, then compare 500/1,000/2,000-example runs against the same development set.
+Budget 2,000-5,000 reviewed training examples if more data continues to help. Start balanced by
+class, but include ordinary chat as well as these game-topic social contrasts. Add slang, typos,
+fragments and mixed intents across both classes; random greeting prefixes are not new independent
+examples. Reserve an additional 200-500 reviewed examples for development/final evaluation, split
+by conversation and paraphrase family; supplement with real player inputs as they become available.
+The 43 confirmed NPC inputs in the current database export are useful but too few for a confident
+standalone release estimate. Existing model-produced labels need correction, not automatic reuse.
+Ambiguous fragments requiring absent conversation context should be flagged for review instead of
+assigned an arbitrary label. Keep the existing 96-message gate out of all training and report
+GAME recall and CHAT recall separately. Check accuracy again after GGUF quantization.
+
 ## Optional local Decider 2B Q4_K_M classifier (2026-10-14)
+
+Reported v2 raw evaluation (October 14, approximately 12:00 Pacific): 81/96 correct;
+GAME 33/48 (68.75%), CHAT 48/48 (100%), all 96 via `raw_model`. This fails the 90%-per-class
+gate. The console contains no timings or policy metadata; the full artifact remains on the host
+at `artifacts/decider-raw-v2.json`. These raw results must not be confused with the earlier v1
+hybrid test, which happened to have identical totals. Full v2 hybrid accuracy is still unverified.
+
+The current adapter supplies only JSON message text, without explicit RPG setting. To test whether
+that missing context contributes to ambiguous decisions, a diagnostic-only comparison adds a short
+game setting while keeping the production question/options unchanged. It uses 16 separate paired
+factual/social development cases (32 decisions), alternates variant order, and reports per-class
+counts, probabilities and median latency. It does not change production or qualify model accuracy:
+
+```powershell
+.venv\Scripts\python.exe python/diagnose_decider.py --game-context --output artifacts/decider-context.json
+```
+
+Avoid concurrent load tests: this command loads another native model copy. Its request construction
+was smoke-tested locally with a model double; real context-comparison results remain pending.
 
 Diagnostic follow-up (October 14): the host's 35 development probes passed all five controls,
 all five reversed controls and the repeated control (identical probabilities). The v1 prompt
@@ -15,8 +144,8 @@ The prepared `game-chat-v2` policy uses the exact tested short question/descript
 retains JSON message encoding. It maps those descriptions back to the existing `game`/`general`
 API categories. No dependency rebuild is needed for this prompt change. Update the server checkout,
 run the unchanged 96-message raw and hybrid evaluations below, then restart 9092 and confirm
-`/health.classification.decision_policy=game-chat-v2`. The full gate and live deployment remain
-unverified for v2; require 90% in each class before another burst.
+`/health.classification.decision_policy=game-chat-v2`. The raw v2 gate failed as recorded above;
+live deployment/hybrid results remain unverified. Require 90% in each class before another burst.
 
 Live node B check (October 14, 11:35-11:38 Pacific): `192.168.1.188:9092` reports Decider 2B
 Q4_K_M active, four CPU threads, zero GPU layers and one inference slot. The deployed hybrid
@@ -467,6 +596,10 @@ Tests: `tests/test_companion.py`.
 ## How each step works
 
 **Classifier** (`npc_rag/classifier.py`). The model on `CLASSIFIER_URL` gets a short instruction and answers GAME or CHAT (4 tokens, temperature 0). From the development PC, Llama-3.2-3B on MONOLITH-III classified 96.2% of the 80 held-out messages in `data/eval_messages.json` correctly, taking about 0.6 s each. Wiki retrieval runs alongside it: a best score of `RAG_GAME_EVIDENCE` (0.66) or more immediately makes the message a game question. Otherwise the model decides; if unavailable or invalid, weak wiki evidence counts as chat. In the service, `CLASSIFIER_TIMEOUT` bounds model queueing plus HTTP time, not retrieval or the whole conversation. Measure accuracy with `python -m npc_rag eval`, or `eval --wiki-only` for the fallback alone.
+
+**Keyword evidence (classifier policy `hybrid-v2`, 2026-10-14).** Short keyword questions ("whats a dive") embed weakly, so a second rule also makes a message a game question: best wiki score at least `RAG_KEYWORD_DENSE` (0.62) **and** keyword coverage at least `RAG_KEYWORD_COVERAGE` (0.5). Coverage is the share of the message's IDF-weighted words found in the single best BM25 section; words the wiki never uses count at full weight, so off-topic questions stay low. Thresholds were picked on the 500 authored rows of `data/classifier/synthetic-pilot-v1.jsonl` (game recall 72.4% → 76.0%, chat forced to game unchanged at 1.6%), not on the eval files. Wiki-only held-out + mixed accuracy: 84.4% → 86.5% (game 68.8% → 72.9%, chat still 100%). `/v1/search` now returns `keyword_coverage`; set `RAG_KEYWORD_COVERAGE=2` to turn the rule off.
+
+**Routing scores in the logs.** Pip and companion log lines now carry the classifier signals in brackets, e.g. `game/wiki passed 812ms [llm=general wiki_best=0.6431 wiki_keyword=0.71]: 'whats a dive'`. Lines where `llm=general` but the category is `game` (or `llm=game` with a low `wiki_best`) are model/wiki disagreements — the best real messages to hand-label for classifier training.
 
 **Retrieval** (`npc_rag/wiki.py`, `npc_rag/index.py`). Chapters come from `pages.json` and `content/<slug>.md` (the public list, so maintainer-only pages are never indexed). They are cut at every heading. Tables become one sentence per row, and long sections split at about 180 words with one block of overlap. That gives 73 chunks for the current wiki. Each search blends BM25 keywords (exact words like "Cursebreaker" or "RPP") and embeddings (meaning) with reciprocal rank fusion. Heading ids replicate `wiki.js`, and a test runs the real regex in node, so every link opens the right section.
 
