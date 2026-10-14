@@ -69,12 +69,14 @@ def cmd_eval(s, args) -> int:
         if s.classifier_backend == "decider":
             raise ValueError("--classifier-url requires --classifier-backend llamacpp")
         s = replace(s, classifier_url=args.classifier_url)
-    llm = None if args.wiki_only else make_classifier(s)  # Wiki-only evaluation never downloads or loads Decider.
+    llm = None
     if getattr(args, 'decider_torch_model', None):
         if args.wiki_only or s.classifier_backend != 'decider':
             raise ValueError('--decider-torch-model requires Decider model evaluation')
         from .classifier_backend import make_torch_eval_classifier
         llm = make_torch_eval_classifier(s, args.decider_torch_model)
+    elif not args.wiki_only:
+        llm = make_classifier(s)  # Wiki-only evaluation never downloads or loads Decider.
     data = json.loads((ROOT / "data" / "eval_messages.json").read_text(encoding="utf-8"))
     cases = [(label, msg, "held_out") for label in ("game", "general") for msg in data[label]]
     if args.include_mixed:

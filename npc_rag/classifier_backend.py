@@ -10,8 +10,10 @@ from pathlib import Path
 
 from .classifier import CLASSIFY_GRAMMAR, GAME, GENERAL, ModelDecision, classifier_messages, parse_verdict
 from .config import ROOT
-from .decider_policy import DECIDER_LABELS, DECIDER_OPTIONS, DECIDER_POLICY, DECIDER_QUESTION
+from .decider_policy import DECIDER_LABELS, DECIDER_OPTIONS, DECIDER_POLICY, DECIDER_QUESTION, policy_for_layout
+from .decider_prompt import checkpoint_layout, create_routing_decider
 from .llm import LlamaClient, LLMError
+from .model_download import CUSTOM_GGUF, CUSTOM_MODEL, ensure_custom_decider
 
 
 class ChatClassifier:
@@ -52,6 +54,9 @@ class DeciderClassifier:
         self._closed = False
         self._busy = False
         self._failures = 0
+        self._prompt_layout = 'state_first'
+        self._model_source = settings.decider_model
+        self._gguf_file = settings.decider_gguf_file
 
     async def _native(self, function):
         await self._slot.acquire()  # Cancellation while waiting prevents submission entirely.
@@ -87,10 +92,13 @@ class DeciderClassifier:
                 import llama_cpp  # Fail at startup if the optional native backend was not installed.
             except ImportError as exc:
                 raise RuntimeError("Install requirements-decider.txt in the RAG environment before enabling Decider") from exc
-            factory = Decider
+            factory = create_routing_decider
         else:
             factory = self._factory  # Tests substitute the native model without downloading any weights.
         source = self.settings.decider_model
+        if self._factory is None and source == CUSTOM_MODEL:
+            source = str(ensure_custom_decider())  # Fetch matching weights and sidecars before native loading.
+            self._gguf_file = CUSTOM_GGUF  # Old .env filenames cannot select mismatched weights for this release.
         local = Path(source)
         if not local.is_absolute() and (ROOT / local).is_dir():
             source = str(ROOT / local)  # Local model folders resolve relative to the npc-rag checkout.
@@ -101,8 +109,11 @@ class DeciderClassifier:
             config = json.loads(config_path.read_text(encoding="utf-8"))
             if not isinstance(config, dict) or "temperature" not in config:
                 raise RuntimeError("Decider requires its matching decider_config.json with calibration temperature")
+            self._prompt_layout = checkpoint_layout(config)
             # Upstream tolerates missing config; require it here so an offline/error path cannot lose calibration silently.
-        self._model = factory(source, gguf_file=self.settings.decider_gguf_file,
+        layout_options = {'prompt_order': self._prompt_layout} if self._factory is None else {}
+        self._model_source = source  # Health and decision-cache identity describe the actual local release.
+        self._model = factory(source, **layout_options, gguf_file=self._gguf_file,
                               gguf_options={"n_gpu_layers": self.settings.decider_gpu_layers,
                                             "n_threads": self.settings.decider_threads,
                                             "n_ctx": self.settings.decider_context, "n_seq_max": 1})
@@ -144,16 +155,20 @@ class DeciderClassifier:
     async def model_identity(self):
         if not await self.health():
             return None
-        return ("decider", self.settings.decider_model, self.settings.decider_gguf_file, DECIDER_POLICY)
+        engine = getattr(self, '_engine_name', 'gguf')
+        return ("decider", self._model_source,
+                self._gguf_file if engine == 'gguf' else engine, policy_for_layout(self._prompt_layout))
 
     async def health(self):
         return self._model is not None and not self._closed  # Readiness, not a new inference on every health poll.
 
     def view(self):
-        return {"backend": "decider", "decision_policy": DECIDER_POLICY,
-                "model": self.settings.decider_model,
+        return {"backend": "decider", "decision_policy": policy_for_layout(self._prompt_layout),
+                "prompt_layout": self._prompt_layout, "prefix_cache": False,
+                "model": self._model_source,
+                "release": CUSTOM_MODEL if self.settings.decider_model == CUSTOM_MODEL else None,
                 "engine": getattr(self, '_engine_name', 'gguf'),
-                "gguf_file": None if getattr(self, '_engine_name', 'gguf') == 'torch-bf16' else self.settings.decider_gguf_file,
+                "gguf_file": None if getattr(self, '_engine_name', 'gguf') == 'torch-bf16' else self._gguf_file,
                 "threads": self.settings.decider_threads, "gpu_layers": self.settings.decider_gpu_layers,
                 "context": self.settings.decider_context, "capacity": 1, "busy": self._busy,
                 "failures": self._failures}
@@ -185,13 +200,14 @@ def make_torch_eval_classifier(settings, model_path):
     from dataclasses import replace
     path = Path(model_path).resolve()
     config = json.loads((path / 'decider_config.json').read_text(encoding='utf-8'))
-    if 'temperature' not in config or config.get('routing_policy', DECIDER_POLICY) != DECIDER_POLICY:
-        raise ValueError('Evaluation checkpoint lacks temperature or uses a different routing policy')
+    if 'temperature' not in config:
+        raise ValueError('Evaluation checkpoint lacks temperature')
+    layout = checkpoint_layout(config)
 
     def factory(source, **kwargs):
-        from decider.infer import Decider
-        return Decider(source, device='cuda', use_graphs=False)  # Eager BF16 uses the upstream Torch readout.
+        return create_routing_decider(source, prompt_order=layout, device='cuda', use_graphs=False)
 
     backend = DeciderClassifier(replace(settings, classifier_backend='decider', decider_model=str(path)), factory=factory)
     backend._engine_name = 'torch-bf16'
+    backend._prompt_layout = layout
     return backend

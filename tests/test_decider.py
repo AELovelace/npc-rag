@@ -85,6 +85,27 @@ def test_invalid_decisions_are_errors_and_not_cached(settings, result):
     asyncio.run(run())
 
 
+def test_confidence_survives_routing_without_changing_wiki_override():
+    from npc_rag.classifier import ModelDecision, classify
+
+    async def run():
+        async def ask(message):
+            return ModelDecision(GENERAL, .03)
+
+        async def weak(message):
+            return .1
+
+        async def strong(message):
+            return .8
+
+        verdict = await classify('Some non-shortcut message', ask_llm=ask, evidence=weak, wiki_evidence=.66)
+        assert verdict.category == GENERAL and verdict.to_dict()['scores']['game_probability'] == .03
+        verdict = await classify('Some non-shortcut message', ask_llm=ask, evidence=strong, wiki_evidence=.66)
+        assert verdict.category == GAME  # Confidence is telemetry; fusion remains a separate change.
+
+    asyncio.run(run())
+
+
 def test_native_timeout_does_not_overlap_or_enqueue_cancelled_calls(settings):
     async def run():
         started, finish = threading.Event(), threading.Event()

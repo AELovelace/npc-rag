@@ -3,6 +3,8 @@ param(
     [switch]$SmokeTest,
     [switch]$CheckData,
     [int]$Epochs = 2,
+    [ValidateSet('state_first', 'schema_first')]
+    [string]$PromptLayout = 'state_first',
     [string]$Output = ""
 )
 $ErrorActionPreference = 'Stop'
@@ -11,7 +13,7 @@ $TrainingPython = Join-Path $TrainingRoot '.venv-train\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $TrainingPython)) {
     throw 'Run ps\Install-ClassifierTraining.ps1 first.'
 }
-$TrainingArgs = @((Join-Path $TrainingRoot 'python\train_classifier.py'), '--epochs', [string]$Epochs)
+$TrainingArgs = @((Join-Path $TrainingRoot 'python\train_classifier.py'), '--epochs', [string]$Epochs, '--prompt-layout', $PromptLayout)
 if ($SmokeTest) { $TrainingArgs += '--smoke-test' }
 if ($CheckData) { $TrainingArgs += '--check-data' }
 if ($Output) { $TrainingArgs += @('--output', $Output) }

@@ -15,9 +15,6 @@ from classifier_expansion import EXTRA
 from classifier_diversity import PAIRS, DEV
 from classifier_augmentation import augment_rows, augmentation_stats, check_shortcut
 
-PREFIXES = ("hey friend, ", "quick thing: ", "so, ", "one more thing: ", "please hear me out: ")
-
-
 def partition(rows, seed=417):
     families = sorted({r["family_id"] for r in rows})
     parent = {f: f for f in families}
@@ -96,6 +93,7 @@ def build(wiki_root):
     matches = partition(rows)
     dev = authored_pairs(DEV, "dev-v2", split="development")
     validate_unique(rows + dev, heldout)
+    check_development_similarity(rows, dev)
     manifest = {"schema_version": 2, "created_at": datetime.now(timezone.utc).isoformat(),
                 "total": len(rows), "authored_messages": len(rows), "prefix_augmented_messages": 0,
                 "families": len({r['family_id'] for r in rows}), "split_seed": 417, "labels": dict(Counter(r["label"] for r in rows)),
@@ -107,7 +105,7 @@ def build(wiki_root):
                 "independent_label_review": False, "release_qualified": False,
                 "shortcut": check_shortcut(rows),
                 "development": {"total": len(dev), "labels": dict(Counter(r['label'] for r in dev)),
-                                "shortcut": check_shortcut(dev)},
+                                "shortcut": check_shortcut(dev), "training_near_duplicates_at_082": 0},
                 "short_rows_by_label": dict(Counter(r['label'] for r in rows if len(r['message'].split()) <= 4)),
                 "augmentation": {"mode": "on_the_fly_per_epoch", "label_independent": True,
                                  "preview_epochs": [augmentation_stats(augment_rows([r for r in rows if r['split'] == 'train'], 417 + epoch)) for epoch in range(2)]},
@@ -159,6 +157,15 @@ def validate_unique(rows, heldout):
         if text in seen:
             raise ValueError(f"Duplicate authored message: {row['id']}")
         seen.add(text)
+
+
+def check_development_similarity(rows, dev, threshold=.82):
+    for train in rows:
+        for candidate in dev:
+            match = SequenceMatcher(None, normalize(train['message']), normalize(candidate['message']))
+            if match.quick_ratio() >= threshold and match.ratio() >= threshold:
+                raise ValueError(f"Development near-duplicate: {train['id']} / {candidate['id']}")
+    # This guards wording reuse; the dataset still needs independent human review for semantic leakage.
 
 
 def main():

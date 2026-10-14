@@ -3,12 +3,16 @@
     Start npc-rag (port 9092) in the background and wait until it is healthy.
 .PARAMETER Foreground
     Run it in this window instead (used by the scheduled task).
+.PARAMETER StartupTimeoutSeconds
+    Allow the first custom Decider download and model loading to finish (default 20 minutes).
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File ps\Start-NpcRag.ps1
 #>
 param(
     [switch]$Foreground,
-    [string]$EnvFile = ".env" # Optional alternate configuration; normal overflow uses the existing .env on 9092.
+    [string]$EnvFile = ".env", # Optional alternate configuration; normal overflow uses the existing .env on 9092.
+    [ValidateRange(1, 86400)]
+    [int]$StartupTimeoutSeconds = 1200
 )
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
@@ -49,11 +53,14 @@ $busy = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Silentl
 if ($busy) { Write-Host "Port $port still in use (PID $($busy[0].OwningProcess)); not starting." -ForegroundColor Yellow; return }
 
 $logName = if ($port -eq 9092) { "npc-rag" } else { "npc-rag-$port" } # Separate output avoids two services truncating each other's log.
-Start-Process -FilePath $Venv -ArgumentList @("-m", "npc_rag", "serve", "--env-file", ('"' + $envFilePath + '"')) -WorkingDirectory $Root `
-    -WindowStyle Hidden -RedirectStandardOutput "$Logs\$logName.out.log" -RedirectStandardError "$Logs\$logName.log"
+$ragProcess = Start-Process -FilePath $Venv -ArgumentList @("-m", "npc_rag", "serve", "--env-file", ('"' + $envFilePath + '"')) -WorkingDirectory $Root `
+    -WindowStyle Hidden -PassThru -RedirectStandardOutput "$Logs\$logName.out.log" -RedirectStandardError "$Logs\$logName.log"
 
-$deadline = (Get-Date).AddSeconds(120)
+Write-Host "Waiting for npc-rag; the first custom Decider startup downloads 1.27 GB. Progress: $Logs\$logName.log"
+$deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
 while ((Get-Date) -lt $deadline) {
+    $ragProcess.Refresh()
+    if ($ragProcess.HasExited) { throw "npc-rag exited during startup; see $Logs\$logName.log" } # Report failed downloads immediately.
     try {
         $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/health" -TimeoutSec 5
         Write-Host "npc-rag is up on port $port" -ForegroundColor Green
@@ -64,6 +71,6 @@ while ((Get-Date) -lt $deadline) {
             Write-Host "Warning: no classifier at $($health.classifier_url). The wiki score will decide game vs chat." -ForegroundColor Yellow
         }
         return
-    } catch { Start-Sleep -Seconds 1 }  # Model loading takes a few seconds on first start.
+    } catch { Start-Sleep -Seconds 1 }  # Readiness waits for download, verification and native model loading.
 }
-throw "npc-rag did not become healthy on port $port; see $Logs\$logName.log"
+throw "npc-rag is still starting or unhealthy on port $port; its process was left running. See $Logs\$logName.log"

@@ -20,3 +20,6 @@ decider = ["decider-ai[gguf]==1.9.0"]  # Optional backend requires Python 3.11+;
 testpaths = ["tests"]
 pythonpath = ["."]
 filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.setuptools.package-data]
+npc_rag = ["decider_release.json", "decider_config/*.json", "decider_config/*.jinja"]  # Configs travel with Git/code releases.

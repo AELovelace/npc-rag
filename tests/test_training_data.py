@@ -81,6 +81,8 @@ def test_development_separate_from_training_and_fixed_evaluation(tmp_path):
     data = load_dataset(ROOT / 'data/classifier/synthetic-pilot-v2.jsonl')
     rows = load_development(ROOT / 'data/classifier/realistic-dev-v2.jsonl', data)
     assert len(rows) == 200
+    from build_classifier_dataset import check_development_similarity
+    check_development_similarity([r for group in data.values() for r in group], rows)
     fixed = json.loads((ROOT / 'data/eval_messages.json').read_text())
     rows[0]['message'] = fixed['general'][0]
     with pytest.raises(ValueError, match='overlaps'):
@@ -90,3 +92,11 @@ def test_development_separate_from_training_and_fixed_evaluation(tmp_path):
 def test_emoji_reactions_are_distinct():
     from build_classifier_seed import normalize
     assert normalize('😅') != normalize('🌻')
+
+
+def test_checkpoint_prompt_order_requires_matching_policy():
+    from npc_rag.decider_prompt import checkpoint_layout
+    assert checkpoint_layout({}) == 'state_first'
+    assert checkpoint_layout({'routing_prompt_order': 'schema_first', 'routing_policy': 'game-chat-v4-schema-first'}) == 'schema_first'
+    with pytest.raises(ValueError, match='disagrees'):
+        checkpoint_layout({'routing_prompt_order': 'schema_first', 'routing_policy': 'game-chat-v3'})

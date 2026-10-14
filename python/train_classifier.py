@@ -12,11 +12,11 @@ from pathlib import Path
 import random
 import sys
 import time
-from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from npc_rag.decider_policy import DECIDER_OPTIONS, DECIDER_POLICY, DECIDER_QUESTION
+from npc_rag.decider_policy import DECIDER_OPTIONS, DECIDER_QUESTION, policy_for_layout
+from npc_rag.decider_prompt import build_decision_item
 from build_classifier_seed import normalize
 from classifier_augmentation import augment_rows, augmentation_stats
 
@@ -59,16 +59,17 @@ def load_dataset(path):
 
 def load_development(path, splits):
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    reserved, families, ids = set(), set(), set()
+    reserved, families, ids, groups = set(), set(), set(), set()
     for group in splits.values():
         for row in group:
             reserved.add(normalize(row['message'])); families.add(row['family_id']); ids.add(row['id'])
+            groups.add(row['split_group'])
     for name in ("eval_messages.json", "eval_mixed_messages.json"):
         data = json.loads((ROOT / 'data' / name).read_text(encoding='utf-8'))
         reserved.update(normalize(s) for label in LABELS for s in data[label])
     for row in rows:
         key = normalize(row['message'])
-        if key in reserved or row['family_id'] in families or row['id'] in ids:
+        if key in reserved or row['family_id'] in families or row['split_group'] in groups or row['id'] in ids:
             raise ValueError('Development overlaps training families/messages or fixed evaluation')
         if row['label'] not in LABELS or row['split'] != 'development' or not 0 < len(row['message']) <= 500:
             raise ValueError('Invalid development row')
@@ -83,19 +84,12 @@ class KeepOrder:
         pass  # Evaluation preserves production's GAME-then-CHAT option order.
 
 
-def encode_rows(rows, tokenizer, max_tokens, *, shuffle_options=False, seed=417):
-    from decider.prompt import build
+def encode_rows(rows, tokenizer, max_tokens, *, shuffle_options=False, seed=417, layout='state_first'):
     rng = random.Random(seed) if shuffle_options else KeepOrder()
     encoded = []
     for row in rows:
-        state = json.dumps({"message": row["message"]}, ensure_ascii=False)
-        if len(tokenizer.encode("Context:\n" + state, add_special_tokens=False)) > max_tokens:
-            raise ValueError(f"Message exceeds token budget: {row['id']}")
-        example = SimpleNamespace(context=state, qs=[SimpleNamespace(
-            text=DECIDER_QUESTION, options=list(DECIDER_OPTIONS), gold=LABELS.index(row["label"]))])
-        item = build(example, tokenizer, rng=rng, max_options=2, max_ctx_tokens=max_tokens, layout="state_first")
-        if len(item["ids"]) > max_tokens or item["slots"] != [len(item["ids"]) - 1]:
-            raise ValueError(f"Full decision prompt exceeds budget or has unexpected slots: {row['id']}")
+        item = build_decision_item(row['message'], tokenizer, max_tokens, layout=layout,
+                                   rng=rng, gold=LABELS.index(row['label']))
         item.update(id=row["id"], expected=row["label"])
         encoded.append(item)
     return encoded  # Labels select the loss target; no labels, provenance or gold answer tokens enter input_ids.
@@ -174,8 +168,8 @@ def run(args, splits):
     revision = HfApi().model_info(args.model, revision=args.revision).sha
     config_path = hf_hub_download(args.model, "decider_config.json", revision=revision, cache_dir=cache)
     decision_config = json.loads(Path(config_path).read_text(encoding="utf-8"))
-    if decision_config.get("layout", "plain") != "plain" or decision_config.get("schema_first", False):
-        raise ValueError("This runner supports the plain state-first Decider checkpoint only")
+    if decision_config.get("layout", "plain") != "plain":
+        raise ValueError("This runner supports plain Decider checkpoints only")
     dtype = torch.bfloat16
     tokenizer = AutoTokenizer.from_pretrained(args.model, revision=revision, cache_dir=cache)
     letters_list = [tokenizer.encode(x, add_special_tokens=False) for x in ("A", "B")]
@@ -184,7 +178,7 @@ def run(args, splits):
     letters = torch.tensor([x[0] for x in letters_list], device="cuda", dtype=torch.long)
     splits = {**splits, 'development': load_development(args.dev_dataset, splits)}
     selected = {key: rows[:8] if args.smoke_test else rows for key, rows in splits.items()}
-    encoded = {key: encode_rows(rows, tokenizer, args.max_tokens, shuffle_options=key == "train", seed=args.seed)
+    encoded = {key: encode_rows(rows, tokenizer, args.max_tokens, shuffle_options=key == "train", seed=args.seed, layout=args.prompt_layout)
                for key, rows in selected.items() if key != "test"}  # Test examples are not scored during checkpoint selection.
     model = AutoModelForCausalLM.from_pretrained(
         args.model, revision=revision, cache_dir=cache, dtype=dtype, attn_implementation="sdpa",
@@ -201,7 +195,8 @@ def run(args, splits):
     trainable = [p for p in model.parameters() if p.requires_grad]
     if not trainable:
         raise RuntimeError("No adapter parameters are trainable")
-    metadata = {"model": args.model, "revision": revision, "policy": DECIDER_POLICY,
+    metadata = {"model": args.model, "revision": revision, "policy": policy_for_layout(args.prompt_layout),
+                "prompt_layout": args.prompt_layout,
                 "question": DECIDER_QUESTION, "options": list(DECIDER_OPTIONS),
                 "state_encoding": 'json.dumps({"message": message}, ensure_ascii=False)',
                 "dataset_sha256": hashlib.sha256(args.dataset.read_bytes()).hexdigest(),
@@ -233,7 +228,7 @@ def run(args, splits):
         augmented = augment_rows(selected['train'], args.seed + epoch)
         stats = augmentation_stats(augmented) if not args.smoke_test else {'smoke_subset': True}
         write_json(args.output / f'epoch-{epoch + 1}-augmentation.json', {'stats': stats, 'rows': augmented})
-        items = encode_rows(augmented, tokenizer, args.max_tokens, shuffle_options=True, seed=args.seed + epoch)
+        items = encode_rows(augmented, tokenizer, args.max_tokens, shuffle_options=True, seed=args.seed + epoch, layout=args.prompt_layout)
         random.Random(args.seed + epoch).shuffle(items)
         model.train()
         for start in range(0, len(items), accumulation):
@@ -279,7 +274,9 @@ def run(args, splits):
             write_json(args.output / "best-adapter" / "routing_policy.json", metadata)
             write_json(args.output / 'best-adapter' / 'decider_config.json',
                        {**decision_config, 'temperature': 1.0, 'temperature_by_type': {},
-                        'calibration_status': 'uncalibrated_after_finetuning', 'routing_policy': DECIDER_POLICY})
+                        'calibration_status': 'uncalibrated_after_finetuning', 'routing_policy': metadata['policy'],
+                        'routing_prompt_order': args.prompt_layout, 'schema_first': args.prompt_layout == 'schema_first',
+                        'schema_first_trained': args.prompt_layout == 'schema_first'})
         write_json(args.output / "history.json", history)
     model.load_adapter(str(args.output / "best-adapter"), adapter_name="selected", is_trainable=False)
     model.set_adapter("selected")  # Verify the saved adapter can be reloaded before reporting completion.
@@ -291,7 +288,7 @@ def run(args, splits):
         write_json(args.output / "reloaded-validation.json", reloaded)
         print("GPU smoke test passed: finite forward/backward, nonzero gradients, and matching saved/reloaded adapter.", flush=True)
     else:
-        test = evaluate(model, encode_rows(splits["test"], tokenizer, args.max_tokens), letters, dtype)
+        test = evaluate(model, encode_rows(splits["test"], tokenizer, args.max_tokens, layout=args.prompt_layout), letters, dtype)
         write_json(args.output / "final-test.json", test)
         print("Final synthetic test:", json.dumps({k: v for k, v in test.items() if k != "rows"}), flush=True)
     write_json(args.output / "completion.json", {"completed": True, "smoke_test": args.smoke_test,
@@ -312,6 +309,8 @@ def main():
     parser.add_argument("--model", default="Mapika/decider-2b")
     parser.add_argument("--revision", default=DEFAULT_REVISION)
     parser.add_argument("--epochs", type=int, default=2)
+    parser.add_argument('--prompt-layout', choices=('state_first', 'schema_first'), default='state_first',
+                        help='schema_first puts fixed question/options before message; this is a separate v4 experiment')
     parser.add_argument("--rank", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--accumulation", type=int, default=16)

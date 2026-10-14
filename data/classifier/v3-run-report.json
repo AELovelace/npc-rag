@@ -1,0 +1,103 @@
+{
+  "base": {
+    "accuracy": 0.90625,
+    "game_recall": 0.8125,
+    "chat_recall": 1.0,
+    "game_missed_as_chat": 9,
+    "chat_sent_to_game": 0
+  },
+  "fine_tuned": {
+    "accuracy": 0.9583333333333334,
+    "game_recall": 0.9166666666666666,
+    "chat_recall": 1.0,
+    "game_missed_as_chat": 4,
+    "chat_sent_to_game": 0
+  },
+  "held_out_improved": true,
+  "qwen_target": {
+    "base": {
+      "held_out_accuracy": 0.9125,
+      "mixed_accuracy": 0.875,
+      "passed": false,
+      "target": "At least 75/80 held-out (93.8% rounded) and 16/16 mixed (100%)"
+    },
+    "fine_tuned": {
+      "held_out_accuracy": 0.95,
+      "mixed_accuracy": 1.0,
+      "passed": true,
+      "target": "At least 75/80 held-out (93.8% rounded) and 16/16 mixed (100%)"
+    }
+  },
+  "improvement_rule": "Higher total accuracy without lower worst-class recall on the identical final hybrid suite",
+  "both_classes_pass_90_percent": true,
+  "wiki_evidence_identical": true,
+  "policy": "hybrid-v2",
+  "decision_policy": "game-chat-v3",
+  "engine": "torch-bf16",
+  "training": {
+    "completed": true,
+    "smoke_test": false,
+    "seconds": 1258.02,
+    "steps": 100,
+    "selected_epoch": 2,
+    "development_improved_over_baseline": true,
+    "peak_vram_gib": 2.78,
+    "deployment_ready": false
+  },
+  "provenance": {
+    "model": "Mapika/decider-2b",
+    "revision": "ff99089b6810691bd79134ec6febb5d9afa6e619",
+    "policy": "game-chat-v3",
+    "question": "Is the player asking for game help or information, or having a social or off-topic conversation?",
+    "options": [
+      "Game help or info: how to play, rules, controls, items, places, lore, quests or a gameplay problem",
+      "Social or off-topic: feelings, jokes, preferences, chatting with the character, or real-world questions"
+    ],
+    "state_encoding": "json.dumps({\"message\": message}, ensure_ascii=False)",
+    "dataset_sha256": "09d4192e1e37fc97db05852389e10321c3c0ad75e31f3a5e31fd54b0bebf1323",
+    "dataset": "C:\\Scripts\\npc-rag\\data\\classifier\\synthetic-pilot-v2.jsonl",
+    "seed": 417,
+    "rank": 8,
+    "development_sha256": "04c4a38fe0a9e2d9607cc46f7fd9e03a04f34a44963f609e02cfa3dcdc87b826",
+    "selection": "development worst-class recall, accuracy, negative loss",
+    "epochs": 2,
+    "learning_rate": 0.0001,
+    "accumulation": 16,
+    "max_tokens": 384,
+    "smoke_test": false,
+    "gpu": "NVIDIA GeForce RTX 3080",
+    "trainable_parameters": 8409600,
+    "packages": {
+      "torch": "2.10.0+cu128",
+      "transformers": "5.19.0",
+      "peft": "0.21.2",
+      "bitsandbytes": "0.50.2",
+      "decider-ai": "1.9.0"
+    },
+    "split_counts": {
+      "train": 800,
+      "test": 100,
+      "validation": 100,
+      "development": 200
+    },
+    "calibrated_after_training": false,
+    "deployment_ready": false
+  },
+  "artifacts": {
+    "base": {
+      "path": "C:\\Scripts\\npc-rag\\runs\\classifier-v3-first-pass\\base-heldout.json",
+      "sha256": "1978f2fa47aadb39c6e3ac7fd45a2287b861b072eea8bcab0693a76b271563e1"
+    },
+    "fine_tuned": {
+      "path": "C:\\Scripts\\npc-rag\\runs\\classifier-v3-first-pass\\tuned-heldout.json",
+      "sha256": "0560727478a8a7be660df24bc0937b9eb82f66b2899c3b167c7585fddec786ee"
+    }
+  },
+  "limitations": [
+    "Synthetic labels have not had independent human review.",
+    "The development set selected the checkpoint; final evaluation did not.",
+    "Merged BF16 evaluation does not qualify a Q4_K_M export.",
+    "Fine-tuned probabilities use temperature 1 and are explicitly uncalibrated.",
+    "Previous NPC context is not included. No production deployment was performed."
+  ]
+}

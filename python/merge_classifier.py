@@ -7,7 +7,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from npc_rag.decider_policy import DECIDER_POLICY
+from npc_rag.decider_policy import policy_for_layout
 
 
 def main():
@@ -20,7 +20,7 @@ def main():
         raise ValueError('Merge output already exists; choose a fresh directory')
     metadata = json.loads((args.run / 'run.json').read_text())
     completion = json.loads((args.run / 'completion.json').read_text())
-    if metadata['policy'] != DECIDER_POLICY or not completion['completed'] or completion['smoke_test']:
+    if metadata['policy'] != policy_for_layout(metadata.get('prompt_layout', 'state_first')) or not completion['completed'] or completion['smoke_test']:
         raise ValueError('Merge requires a completed full run with the current policy')
     import torch
     from transformers import AutoModelForCausalLM

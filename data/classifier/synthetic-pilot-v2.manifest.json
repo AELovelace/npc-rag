@@ -66,7 +66,8 @@
       "total": 200,
       "accuracy": 0.5
     },
-    "sha256": "04c4a38fe0a9e2d9607cc46f7fd9e03a04f34a44963f609e02cfa3dcdc87b826"
+    "sha256": "04c4a38fe0a9e2d9607cc46f7fd9e03a04f34a44963f609e02cfa3dcdc87b826",
+    "training_near_duplicates_at_082": 0
   },
   "short_rows_by_label": {
     "game": 106,

@@ -1,36 +1,123 @@
 # npc-rag: the LiDollQuest tutorial NPC
 
-## First classifier training pass: 1,000 synthetic rows (2026-10-14)
+## Hosting release: decider0-1 Q4_K_M (2026-10-14)
 
-Validated locally on the RTX 3080 10 GB: isolated installation and dependency checks passed;
-the real Mapika 2B v11 QLoRA smoke test completed two optimizer steps, produced nonzero gradients,
-and saved/reloaded matching predictions. Peak PyTorch allocated memory was **2.78 GiB** for the
-eight-row smoke test (not total device memory). Artifact: `runs/classifier-20261014T194210030442Z/`.
-All 1,000 production-format prompts tokenize within 83 tokens. A separate tiny Qwen3.5 test verifies
-restricted A/B logits match full-model logits and adapter parameters update correctly. The ordinary
-suite passes 150 tests; its optional native test runs separately in `.venv-train`. The full two-epoch
-training pass and classifier accuracy improvement are still pending.
+The selected v3 model has now been converted and tested through the native CPU Decider runtime
+(`llama-cpp-python==0.3.36`, four threads, zero GPU layers). The Q4_K_M file preserves the BF16
+result: **76/80 held-out (95%), 16/16 mixed (100%), 92/96 overall**, GAME recall 44/48 and CHAT
+48/48. The same four GAME requests were missed and no CHAT was routed to GAME. Wiki evidence
+matched the BF16 run. This is a sequential local accuracy check, not a server load/latency test.
 
-`data/classifier/synthetic-pilot-v1.jsonl` expands the starter to **1,000 rows, 500 GAME / 500 CHAT**.
-There are **250 paired intent families**: 500 authored messages plus 500 explicitly marked
-conversational-prefix variants. This is not 1,000 independent intents. Each family stays together:
+Hosting files are in `runs/releases/decider0-1-q4km/`:
+
+- `decider0-1.gguf` (1,274,396,192 bytes), intended URL `https://lidoll.dev/gguf/decider0-1.gguf`.
+- `decider0-1-support.zip`, intended URL `https://lidoll.dev/gguf/decider0-1-support.zip`.
+- `SHA256SUMS.txt` and `manifest.json` record integrity/provenance; `qualification.json` records accuracy.
+
+Both hosted files were downloaded and verified with the startup installer. The release is
+**game-chat-v3/message-first**. The large weights and tokenizer come from the site; tunable
+configuration comes from the GitHub checkout, so tuning does not require rehosting the model.
+
+On each server, update this repository with `git pull`, then set these in its existing `.env`:
+
+```dotenv
+CLASSIFIER_BACKEND=decider
+DECIDER_MODEL=lidoll/decider0-1
+DECIDER_GGUF_FILE=decider0-1.gguf
+```
+
+Launch normally with `powershell -ExecutionPolicy Bypass -File ps/Start-NpcRag.ps1` (or restart
+the existing scheduled task). The managed alias selects the pinned GGUF even if an older
+`DECIDER_GGUF_FILE` value remains in `.env`. Existing explicit Hub IDs/local paths keep their
+usual behavior; change `DECIDER_MODEL` once to opt those servers into this managed release.
+The Decider dependencies must already be installed in the RAG environment.
+
+Startup verifies SHA-256 hashes in **`data/models/decider0-1/`**, downloads missing/corrupt assets,
+and copies the current Git-tracked configs from **`npc_rag/decider_config/`** into that model folder.
+Weights and tokenizer are fixed to the release hashes in `npc_rag/decider_release.json`.
+The support ZIP supplies the tokenizer and release records; its historical config copies never
+override the checkout. Downloads go through temporary files and verification before installation.
+Concurrent launches share an installation lock. A failed download stops startup with a clear error;
+the next launch retries. A complete cached installation works offline.
+
+For tuning, edit **`npc_rag/decider_config/decider_config.json`** in GitHub (for example, temperature),
+then `git pull` and restart RAG on both servers. `config.json`, `tokenizer_config.json`, and
+`chat_template.jinja` also travel with the code; their architecture/tokenizer values must match
+these weights. `routing_policy.json` records training provenance; the active question/options
+remain in **`npc_rag/decider_policy.py`**, shared with training. This release requires the trained
+plain, message-first layout. Fine-tuned temperature 1 remains uncalibrated; re-evaluate after tuning.
+Editing the generated cache copies is temporary: startup restores the checkout's versions.
+
+The background launcher now waits up to 20 minutes for first-time provisioning and reports early
+process exits immediately. Use `-StartupTimeoutSeconds` for a different wait; the foreground
+scheduled task waits for actual startup completion. Download progress is in `logs/npc-rag.log`.
+Health reports `release: lidoll/decider0-1`, the local model path, and `gguf_file: decider0-1.gguf`.
+Verified locally: 175 unit tests passed (3 optional native tests skipped), launcher syntax,
+real hosted download, then offline native startup and GAME/CHAT smoke decisions. No live server
+restart or new server latency measurement was performed.
+
+`python/export_classifier_gguf.py` pins conversion to llama.cpp revision
+`0c1e57098bba43ac29e6e3b677cdceebdd22334f`, matching the native package, and uses `--no-mtp`
+because the HF config retains an unused draft-layer count while these classifier weights have
+no MTP tensors. `python/package_classifier_release.py` requires a complete native evaluation
+before assembling the support archive. The earlier `runs/releases/decider0-1/` directory is an
+unqualified conversion intermediate with unused MTP metadata; use only the `-q4km` release above.
+
+## Classifier training v3: diverse data and independent development (2026-10-14)
+
+**Completed first pass:** the merged BF16 model scored **76/80 held-out (95%) and 16/16 mixed
+(100%)**, passing the requested 93.8%/100% bar. With identical `hybrid-v2` routing and identical
+wiki evidence, base Decider scored 87/96 and tuned Decider **92/96**. GAME recall improved from
+39/48 (81.25%) to 44/48 (91.67%); CHAT remained 48/48 (100%). Missed game requests fell from
+9 to 4, with zero chat-to-game errors. These final cases were not used for checkpoint selection.
+Full report: [`data/classifier/v3-run-report.json`](data/classifier/v3-run-report.json).
+
+The run completed 100 optimizer steps over two epochs in 1,258 seconds after baseline checks,
+with 2.78 GiB peak PyTorch allocation. Epoch two won on development worst-class recall: 98%
+GAME and 98% CHAT, versus the base's 83%/100%. Synthetic test was 99/100. The selected adapter
+and merged checkpoint are under `runs/classifier-v3-first-pass/`. **No production deployment was
+performed**; subsequent Q4_K_M qualification is recorded above. Fine-tuned probabilities remain uncalibrated. Ordinary
+tests pass 164 cases; the three optional native tests pass separately in `.venv-train`.
+
+The v3 GPU smoke test passed on the RTX 3080 10 GB: finite forward/backward, nonzero adapter
+gradients and matching saved/reloaded predictions. Peak PyTorch allocated memory was **2.78 GiB**
+(not total device memory); artifact: `runs/classifier-v3-smoke/`. The optional tiny Qwen3.5 test
+also verifies the restricted A/B logits against a full forward pass. Full-run results are recorded
+separately; successful training alone does not establish a routing improvement.
+
+`data/classifier/synthetic-pilot-v2.jsonl` contains **1,000 authored messages, 500 GAME / 500 CHAT**.
+It replaces the old pilot's 500 duplicate-prefix rows with new messages: short lookups, emoji,
+real-world trivia, AI identity, roleplay, game-help imperatives, bugs, implicit needs and lore.
+The 262 family groups include paired contrasts and larger topic families. Each family stays together:
 **800 training / 100 validation / 100 test**, balanced within every split. The builder also keeps
 textually similar families together, rejects normalized duplicates and excludes the fixed 96-message
 evaluation suite. Source wiki and dataset hashes are recorded in the adjacent manifest. No player
-logs were copied. New labels remain synthetic drafts, suitable for an experimental pass rather than
-a claim of independently reviewed ground truth; the authoring script makes that status explicit.
+logs were copied. Labels remain synthetic drafts; see `data/classifier/LABELING_GUIDE.md` for
+opinion/advice, vent/problem and mixed-intent boundaries. The legacy v1 files are historical and
+are no longer the trainer defaults.
+
+`realistic-dev-v2.jsonl` adds **200 separately authored short messages**, balanced by label, with
+no normalized overlap with training or either fixed evaluation file. This set chooses checkpoints
+by worst-class recall, then accuracy, then loss. Synthetic validation is a secondary diagnostic.
+The fixed evaluation files are exclusion checks and final qualification only.
+
+Prefixes, punctuation, lowercasing, apostrophe removal, typos and textspeak are sampled **on the
+fly each epoch with identical probabilities for both labels**. Saved epoch rows record their
+`variant` operations. The `?`/no-`you` shortcut is 50% on the authored dataset; both the builder
+and each full epoch reject shortcut accuracy above 65%. The manifest records preview statistics.
+These checks detect a known artifact, not every possible synthetic-data shortcut.
 
 The first runner targets an **NVIDIA RTX 3080 / 10 GB** with NF4 QLoRA, rank 8, BF16 computation,
 one message per microbatch, accumulation 16, 384-token maximum prompts and two epochs. It trains
 only adapters using cross-entropy on Decider's A/B option logits at the answer slot. The prompt and
-described options come from the same dependency-free policy module as production; JSON contains
+described options come from the same `game-chat-v3` policy module as production; JSON contains
 only the message. Training shuffles option order with corresponding target remapping, while
 validation/test keep production's order. Inputs are rejected rather than silently truncated.
 The full vocabulary logits are not materialized. No llama-cpp-python build is needed for training.
 The base checkpoint is pinned to Mapika's v11 revision `ff99089b6810691bd79134ec6febb5d9afa6e619`.
 On this Windows setup, linear-attention/causal-convolution operations use correct reference PyTorch
 kernels; their optimization warnings are expected. A working smoke test does not require compiling
-those optional kernels. Training speed has not been benchmarked for a full epoch.
+those optional kernels.
 
 From this checkout in PowerShell (Python 3.11 or 3.12):
 
@@ -49,23 +136,81 @@ each machine. The AMD cards are not configured by this first-pass runner.
 The smoke test does two optimizer steps on eight training rows, verifies finite loss/nonzero
 adapter gradients, then saves and reloads the adapter and compares validation probabilities.
 It downloads the original trainable checkpoint on first use (several GB) into ignored
-`data/models/training`, not the Q4_K_M GGUF. Full training selects the best epoch using validation
+`data/models/training`, not the Q4_K_M GGUF. Full training selects the best epoch using development
 per-class recall, accuracy and loss, then evaluates the selected saved adapter once on the
 synthetic test partition. The fixed 96-message gate and real player questions remain outside training.
 
 Each run gets a fresh ignored directory under **`runs/`**. It contains the exact base revision,
-package versions, data hash and routing policy in `run.json`; baseline/epoch validation reports;
+package versions, dataset/development hashes and routing policy in `run.json`; baseline/epoch development and validation reports;
 loss/memory records in `training-metrics.jsonl`; `best-adapter/`; and, after full training,
-`final-test.json`. Completion records whether validation improved over the starting checkpoint.
+`final-test.json`. Completion records whether development improved over the starting checkpoint.
 Existing output directories are refused. A successful process means training completed, not that
 the classifier passed accuracy gates. The synthetic test report includes the existing 90%-per-class
 gate; synthetic success still needs verification on reviewed real inputs.
 
-The result is an **experimental LoRA adapter**, not a deployable GGUF. Merge it into the recorded
-base checkpoint, check/refit calibration, evaluate the unchanged accuracy suite, quantize and
+The result is an **experimental LoRA adapter**, not a deployable GGUF. `python/merge_classifier.py`
+merges into the pinned original BF16 checkpoint on CPU. The saved `decider_config.json` explicitly
+uses **temperature 1, uncalibrated**; stale base-model choice calibration is not presented as tuned
+calibration. Fit temperature on independent development/calibration data before confidence fusion.
+Evaluate the unchanged accuracy suite, quantize and
 evaluate the quantized model before replacing a RAG model. Training does not edit `.env`, start
 services, upload weights or deploy the adapter. This domain-only pass has no generic-task replay;
 do not assume it preserves Decider's unrelated decision skills.
+
+After training, compare the base and merged checkpoints with the **same hybrid CLI** and wiki:
+
+```powershell
+.venv-train\Scripts\python.exe python/merge_classifier.py --run runs/classifier-v3-first-pass
+$BaseCheckpoint = 'data/models/training/models--Mapika--decider-2b/snapshots/ff99089b6810691bd79134ec6febb5d9afa6e619'
+.venv-train\Scripts\python.exe -m npc_rag eval --classifier-backend decider --include-mixed --decider-torch-model $BaseCheckpoint --evidence-url http://192.168.1.188:9092 --output runs/classifier-v3-first-pass/base-heldout.json
+.venv-train\Scripts\python.exe -m npc_rag eval --classifier-backend decider --include-mixed --decider-torch-model runs/classifier-v3-first-pass/merged --evidence-url http://192.168.1.188:9092 --output runs/classifier-v3-first-pass/tuned-heldout.json
+.venv-train\Scripts\python.exe python/compare_classifier_runs.py --run runs/classifier-v3-first-pass --base runs/classifier-v3-first-pass/base-heldout.json --tuned runs/classifier-v3-first-pass/tuned-heldout.json --output data/classifier/v3-run-report.json
+```
+
+`--decider-torch-model` is evaluation-only, uses CUDA/BF16 and does not change server configuration.
+The evaluator returns exit code 1 when either class misses the 90% gate; it still saves the result.
+The comparison rejects different policies, cases, thresholds or wiki scores. It reports both class
+recalls and both error directions. A higher synthetic score is never reported as final improvement.
+These BF16 results do not qualify a future Q4_K_M export or establish live response latency.
+
+Decider labels now retain `game_probability` through the in-memory cache and expose it in verdict
+scores when the model runs. Existing string-label callers remain compatible. The existing wiki
+override thresholds are unchanged; wiki-first decisions need not run Decider and have no model
+probability. Previous-NPC context remains deferred: input and cache still use the message alone.
+
+The requested Qwen-4B comparison bar is **75/80 held-out (93.8% rounded) and 16/16 mixed (100%)**.
+`compare_classifier_runs.py` reports that target separately from improvement over base Decider
+and the existing per-class 90% gate. Neither final subset selects the training checkpoint.
+
+### Planned CPU optimization: fixed prefix first
+
+The next controlled format is `game-chat-v4-schema-first`: **same wording**, question/options
+before the JSON message. It is supported explicitly by both the shared training encoder and
+the inference adapter, including option-order remapping. Checkpoint metadata records
+`routing_prompt_order`, `routing_policy` and `schema_first_trained`; policy/order mismatches fail.
+The existing v3 experiment remains message-first. To start a separate prefix-first experiment:
+
+The separate v4 two-step GPU smoke test also passed finite gradients and save/reload agreement
+(`runs/classifier-v4-prefix-smoke/`, 2.78 GiB peak allocation). This validates the new training path;
+no full v4 run, final accuracy result or cached CPU benchmark is claimed.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ps/Train-Classifier.ps1 -PromptLayout schema_first -SmokeTest
+powershell -ExecutionPolicy Bypass -File ps/Train-Classifier.ps1 -PromptLayout schema_first
+```
+
+**This prepares the layout, not the speedup.** Installed `decider-ai==1.9.0` clears llama.cpp memory
+at every `GGUFEngine._decode`; its `score_shared` calls the full scorer. Its `schema()` cache is
+Torch-only, and setting `schema_first` alone does not alter `decide()` token ordering. Our explicit
+encoder supplies the new order, but GGUF still recomputes it and health reports `prefix_cache: false`.
+With the pinned tokenizer, all 200 development inputs share a **74-token fixed prefix**; their
+remaining suffixes range from 16 to 22 tokens (mean 18.06). These are token counts, not timing results.
+The next native optimization must preserve and restore the full fixed-prefix state (including
+Qwen3.5 recurrent state), decode only the suffix, and demonstrate identical probabilities to
+uncached scoring on alternating/repeated messages before timing warm/cold CPU latency. Retain
+single-worker ownership and cancellation guarantees. Do not remove context clearing without
+that state-isolation test. Shortening options is a later separate experiment after accuracy passes;
+it must retain lore, place, gameplay-problem and off-topic distinctions.
 
 Data-only validation works without GPU dependencies:
 
@@ -183,7 +328,7 @@ position-dependent controls point toward a wider runtime/readout/model issue. Th
 signals, not conclusive root causes. The existing HTTP classification endpoint hides probabilities
 and may cancel native waits when wiki evidence wins, so it cannot perform this comparison alone.
 
-`CLASSIFIER_BACKEND=decider` loads `Mapika/decider-2b-GGUF` / `decider-2b-v11-Q4_K_M.gguf`
+`CLASSIFIER_BACKEND=decider` now defaults to the managed `lidoll/decider0-1` release
 inside the existing RAG process. No extra port or Sakura classifier is needed for this backend.
 Reply models, wiki retrieval, companions, social shortcuts, label caching and overflow retain
 their existing paths. The default remains `llamacpp`, so updating the checkout alone does not switch models.
@@ -244,8 +389,8 @@ The built-in model defaults are:
 
 ```dotenv
 CLASSIFIER_BACKEND=decider
-DECIDER_MODEL=Mapika/decider-2b-GGUF
-DECIDER_GGUF_FILE=decider-2b-v11-Q4_K_M.gguf
+DECIDER_MODEL=lidoll/decider0-1
+DECIDER_GGUF_FILE=decider0-1.gguf
 DECIDER_THREADS=4
 DECIDER_GPU_LAYERS=0
 DECIDER_CONTEXT=4096
@@ -255,8 +400,9 @@ DECIDER_CONTEXT=4096
 tokenizer files, and `decider_config.json`. A GGUF alone is insufficient. Relative directories
 resolve against this checkout. With a Hub ID, the library downloads required files into the usual
 Hugging Face cache on first load; configure `HF_HOME` before launching if a different cache is needed.
-First download/load can exceed the launcher's 120-second health wait, so prepare using the evaluation
-command before changing the live backend. Startup fails clearly if dependencies/config/model cannot load.
+The launcher allows 20 minutes by default for first download/load. Startup fails clearly if
+dependencies/config/model cannot load. To explicitly use the original upstream checkpoint, set
+`DECIDER_MODEL=Mapika/decider-2b-GGUF` and `DECIDER_GGUF_FILE=decider-2b-v11-Q4_K_M.gguf`.
 
 Evaluate without changing the live `.env` or generating any dialogue:
 
