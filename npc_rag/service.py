@@ -89,7 +89,7 @@ def _normalise_history(turns: list[Turn], limit: int) -> list[dict]:
 
 
 def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = None,
-               llm: LlamaClient | None = None, classifier_llm: LlamaClient | None = None) -> FastAPI:
+               llm: LlamaClient | None = None, classifier_llm: LlamaClient | None = None, participation_backend=None) -> FastAPI:
     """App factory; tests inject a stub embedder, a ready index and mocked model servers."""
     state: dict = {"index": index, "embedder": embedder}
     sessions = Sessions(settings.session_turns, settings.session_ttl)
@@ -105,12 +105,18 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
             state["index"] = await asyncio.to_thread(load_or_build, settings, state["embedder"])
         state["llm"] = llm or make_reply_llm(settings)  # The same guarded pipelines support either local or overflow generation.
         state["classifier"] = make_classifier(settings, client=classifier_llm)
+        from .participation import make_participation
+        state['participation'] = (participation_backend or make_participation(settings)) if settings.participation_enabled else None
         try:
             await state["classifier"].start()  # Native model must load successfully before this service accepts traffic.
+            if state['participation'] is not None:
+                await state['participation'].start()
             state["classifier_cache"] = ModelDecisionCache(settings.classifier_cache_size, settings.classifier_cache_ttl)
             state["persona"] = settings.persona_path.read_text(encoding="utf-8")
             yield
         finally:
+            if state['participation'] is not None:
+                await state['participation'].aclose()
             await state["classifier"].aclose()
             await state["llm"].aclose()
 
@@ -177,7 +183,28 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
                 "overflow": state["llm"].view() if hasattr(state["llm"], "view") else {"enabled": False},
                 "classification": {"policy": CLASSIFIER_REVISION, "cache": state["classifier_cache"].view(),
                                    **state["classifier"].view()},
+                'participation': ({'enabled': True, 'healthy': await state['participation'].health(),
+                                   **state['participation'].view()} if state['participation'] else {'enabled': False}),
                 "index": idx.meta if idx else None}
+
+    @app.post('/v1/participation/decide', dependencies=[guard])
+    async def participation_endpoint(context: dict):
+        from .participation_policy import validate_state
+        backend = state.get('participation')
+        if backend is None:
+            raise HTTPException(503, 'participation model is disabled')
+        try:
+            validated = validate_state(context)
+        except (ValueError, TypeError, KeyError):
+            raise HTTPException(422, 'invalid participation context') from None
+        began = time.perf_counter()
+        try:
+            decision = await asyncio.wait_for(backend.decide(validated), settings.participation_timeout)
+        except (asyncio.TimeoutError, LLMError):
+            raise HTTPException(503, 'participation model unavailable or busy') from None
+        return {'decision': decision.label, 'join': decision.label == 'join', 'join_probability': decision.join_probability,
+                'policy': backend.view()['decision_policy'], 'model': 'lidoll/decider-chat-0-1',
+                'timings_ms': {'participation': round((time.perf_counter() - began) * 1000, 2)}}
 
     @app.post("/v1/search", dependencies=[guard])
     async def search_endpoint(req: SearchRequest):

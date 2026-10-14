@@ -8,8 +8,10 @@ import hashlib
 from importlib.metadata import version
 import json
 import math
+import os
 from pathlib import Path
 import random
+import re
 import sys
 import time
 
@@ -24,8 +26,11 @@ LABELS = ("game", "general")
 DEFAULT_REVISION = "ff99089b6810691bd79134ec6febb5d9afa6e619"  # Verified Mapika 2B v11 trainable weights.
 
 
-def load_dataset(path):
+def load_dataset(path, *, task='routing'):
     """Validate labels, family boundaries and exclusion of the fixed evaluation messages before downloads."""
+    if task == 'participation':
+        from participation_data import load_dataset as load_participation
+        return load_participation(path)
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     if not rows:
         raise ValueError("Dataset is empty")
@@ -57,7 +62,10 @@ def load_dataset(path):
     return dict(splits)
 
 
-def load_development(path, splits):
+def load_development(path, splits, *, task='routing'):
+    if task == 'participation':
+        from participation_data import load_development as load_participation
+        return load_participation(path, splits)
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     reserved, families, ids, groups = set(), set(), set(), set()
     for group in splits.values():
@@ -84,12 +92,18 @@ class KeepOrder:
         pass  # Evaluation preserves production's GAME-then-CHAT option order.
 
 
-def encode_rows(rows, tokenizer, max_tokens, *, shuffle_options=False, seed=417, layout='state_first'):
+def encode_rows(rows, tokenizer, max_tokens, *, shuffle_options=False, seed=417, layout='state_first', task='routing'):
     rng = random.Random(seed) if shuffle_options else KeepOrder()
+    labels = task_labels(task)
     encoded = []
     for row in rows:
-        item = build_decision_item(row['message'], tokenizer, max_tokens, layout=layout,
-                                   rng=rng, gold=LABELS.index(row['label']))
+        if task == 'participation':
+            from npc_rag.participation_policy import build_participation_item
+            item = build_participation_item(row['state'], tokenizer, max_tokens, layout=layout,
+                                            rng=rng, gold=labels.index(row['label']))
+        else:
+            item = build_decision_item(row['message'], tokenizer, max_tokens, layout=layout,
+                                       rng=rng, gold=labels.index(row['label']))
         item.update(id=row["id"], expected=row["label"])
         encoded.append(item)
     return encoded  # Labels select the loss target; no labels, provenance or gold answer tokens enter input_ids.
@@ -107,20 +121,47 @@ def slot_logits(model, ids, slot, letters):
     return cap * torch.tanh(logits / cap) if cap else logits
 
 
-def report_rows(rows):
+def task_labels(task):
+    if task == 'participation':
+        from npc_rag.participation_policy import LABELS as participation_labels
+        return participation_labels
+    if task != 'routing':
+        raise ValueError('Unknown training task')
+    return LABELS
+
+
+def task_schema(task, layout):
+    if task == 'participation':
+        from npc_rag.participation_policy import QUESTION, OPTIONS, policy_for_layout as participation_policy
+        return {'policy': participation_policy(layout), 'question': QUESTION, 'options': list(OPTIONS),
+                'state_encoding': 'npc_rag.participation_policy.encode_state', 'task': task}
+    task_labels(task)
+    return {'policy': policy_for_layout(layout), 'question': DECIDER_QUESTION, 'options': list(DECIDER_OPTIONS),
+            'state_encoding': 'json.dumps({"message": message}, ensure_ascii=False)', 'task': task}
+
+
+def report_rows(rows, *, task='routing'):
     by_class = {}
-    for label in LABELS:
+    for label in task_labels(task):
         subset = [r for r in rows if r["expected"] == label]
         correct = sum(r["predicted"] == label for r in subset)
         by_class[label] = {"total": len(subset), "correct": correct,
                            "recall": correct / len(subset) if subset else None}
-    return {"total": len(rows), "accuracy": sum(r["expected"] == r["predicted"] for r in rows) / len(rows),
-            "game_missed_as_chat": sum(r['expected'] == 'game' and r['predicted'] == 'general' for r in rows),
-            "chat_sent_to_game": sum(r['expected'] == 'general' and r['predicted'] == 'game' for r in rows),
-            "by_class": by_class, "gate_passed": all(v["recall"] is not None and v["recall"] >= .9 for v in by_class.values())}
+    result = {"total": len(rows), "accuracy": sum(r["expected"] == r["predicted"] for r in rows) / len(rows),
+              "by_class": by_class, "gate_passed": all(v["recall"] is not None and v["recall"] >= .9 for v in by_class.values())}
+    if task == 'participation':
+        unwanted = sum(r['expected'] == 'quiet' and r['predicted'] == 'join' for r in rows)
+        missed = sum(r['expected'] == 'join' and r['predicted'] == 'quiet' for r in rows)
+        joins = sum(r['predicted'] == 'join' for r in rows)
+        result.update(unwanted_interruptions=unwanted, missed_joins=missed,
+                      join_precision=(joins - unwanted) / joins if joins else None)
+    else:
+        result.update(game_missed_as_chat=sum(r['expected'] == 'game' and r['predicted'] == 'general' for r in rows),
+                      chat_sent_to_game=sum(r['expected'] == 'general' and r['predicted'] == 'game' for r in rows))
+    return result  # Report both error directions; a silent classifier cannot pass by avoiding all interruptions.
 
 
-def evaluate(model, encoded, letters, dtype):
+def evaluate(model, encoded, letters, dtype, *, task='routing'):
     import torch
     import torch.nn.functional as F
     model.eval()
@@ -137,9 +178,9 @@ def evaluate(model, encoded, letters, dtype):
             target = torch.tensor(item["golds"], device="cuda")
             losses.append(F.cross_entropy(logits.float(), target).item())
             rows.append({"id": item["id"], "expected": item["expected"],
-                         "predicted": LABELS[item["perms"][0][prediction]],
+                         "predicted": task_labels(task)[item["perms"][0][prediction]],
                          "probabilities_by_option_order": probs, "logits": logits.float()[0].cpu().tolist()})
-    result = report_rows(rows)
+    result = report_rows(rows, task=task)
     result.update(loss=sum(losses) / len(losses), rows=rows)
     model.train()
     return result
@@ -150,6 +191,8 @@ def write_json(path, value):
 
 
 def run(args, splits):
+    if args.local_files_only:
+        os.environ['HF_HUB_OFFLINE'] = '1'  # Also cover PEFT's optional metadata checks during adapter saving.
     import torch
     import torch.nn.functional as F
     from huggingface_hub import HfApi, hf_hub_download
@@ -165,23 +208,26 @@ def run(args, splits):
     args.output.mkdir(parents=True)
     random.seed(args.seed); torch.manual_seed(args.seed)
     cache = ROOT / "data" / "models" / "training"
-    revision = HfApi().model_info(args.model, revision=args.revision).sha
-    config_path = hf_hub_download(args.model, "decider_config.json", revision=revision, cache_dir=cache)
+    if args.local_files_only and not re.fullmatch(r'[0-9a-f]{40}', args.revision):
+        raise ValueError('Offline training requires an exact 40-character model revision')
+    revision = args.revision if args.local_files_only else HfApi().model_info(args.model, revision=args.revision).sha
+    config_path = hf_hub_download(args.model, "decider_config.json", revision=revision, cache_dir=cache,
+                                  local_files_only=args.local_files_only)
     decision_config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     if decision_config.get("layout", "plain") != "plain":
         raise ValueError("This runner supports plain Decider checkpoints only")
     dtype = torch.bfloat16
-    tokenizer = AutoTokenizer.from_pretrained(args.model, revision=revision, cache_dir=cache)
+    tokenizer = AutoTokenizer.from_pretrained(args.model, revision=revision, cache_dir=cache, local_files_only=args.local_files_only)
     letters_list = [tokenizer.encode(x, add_special_tokens=False) for x in ("A", "B")]
     if any(len(x) != 1 for x in letters_list) or letters_list[0] == letters_list[1]:
         raise ValueError("Expected distinct single-token A/B option letters")
     letters = torch.tensor([x[0] for x in letters_list], device="cuda", dtype=torch.long)
-    splits = {**splits, 'development': load_development(args.dev_dataset, splits)}
+    splits = {**splits, 'development': load_development(args.dev_dataset, splits, task=args.task)}
     selected = {key: rows[:8] if args.smoke_test else rows for key, rows in splits.items()}
-    encoded = {key: encode_rows(rows, tokenizer, args.max_tokens, shuffle_options=key == "train", seed=args.seed, layout=args.prompt_layout)
+    encoded = {key: encode_rows(rows, tokenizer, args.max_tokens, shuffle_options=key == "train", seed=args.seed, layout=args.prompt_layout, task=args.task)
                for key, rows in selected.items() if key != "test"}  # Test examples are not scored during checkpoint selection.
     model = AutoModelForCausalLM.from_pretrained(
-        args.model, revision=revision, cache_dir=cache, dtype=dtype, attn_implementation="sdpa",
+        args.model, revision=revision, cache_dir=cache, dtype=dtype, attn_implementation="sdpa", local_files_only=args.local_files_only,
         device_map={"": 0}, quantization_config=BitsAndBytesConfig(
             load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
             bnb_4bit_compute_dtype=dtype))
@@ -195,10 +241,8 @@ def run(args, splits):
     trainable = [p for p in model.parameters() if p.requires_grad]
     if not trainable:
         raise RuntimeError("No adapter parameters are trainable")
-    metadata = {"model": args.model, "revision": revision, "policy": policy_for_layout(args.prompt_layout),
+    metadata = {"model": args.model, "revision": revision, **task_schema(args.task, args.prompt_layout),
                 "prompt_layout": args.prompt_layout,
-                "question": DECIDER_QUESTION, "options": list(DECIDER_OPTIONS),
-                "state_encoding": 'json.dumps({"message": message}, ensure_ascii=False)',
                 "dataset_sha256": hashlib.sha256(args.dataset.read_bytes()).hexdigest(),
                 "dataset": str(args.dataset), "seed": args.seed, "rank": args.rank,
                 "development_sha256": hashlib.sha256(args.dev_dataset.read_bytes()).hexdigest(),
@@ -212,9 +256,9 @@ def run(args, splits):
     write_json(args.output / "run.json", metadata)
     print(json.dumps({"gpu": metadata["gpu"], "revision": revision, "trainable_parameters": metadata["trainable_parameters"],
                       "max_prompt_tokens": max(len(i["ids"]) for group in encoded.values() for i in group)}, indent=2), flush=True)
-    baseline = evaluate(model, encoded["development"], letters, dtype)
+    baseline = evaluate(model, encoded["development"], letters, dtype, task=args.task)
     write_json(args.output / "baseline-development.json", baseline)
-    write_json(args.output / "baseline-validation.json", evaluate(model, encoded['validation'], letters, dtype))
+    write_json(args.output / "baseline-validation.json", evaluate(model, encoded['validation'], letters, dtype, task=args.task))
     print("Baseline development:", json.dumps({k: v for k, v in baseline.items() if k != "rows"}), flush=True)
     optimizer = torch.optim.AdamW(trainable, lr=args.learning_rate, weight_decay=.01)
     accumulation = 4 if args.smoke_test else args.accumulation
@@ -225,10 +269,13 @@ def run(args, splits):
     torch.cuda.reset_peak_memory_stats()
     started = time.perf_counter()
     for epoch in range(epochs):
-        augmented = augment_rows(selected['train'], args.seed + epoch)
-        stats = augmentation_stats(augmented) if not args.smoke_test else {'smoke_subset': True}
+        augmented = augment_rows(selected['train'], args.seed + epoch) if args.task == 'routing' else selected['train']
+        if args.task == 'routing':
+            stats = augmentation_stats(augmented) if not args.smoke_test else {'smoke_subset': True}
+        else:
+            stats = {'task': args.task, 'augmented': False}
         write_json(args.output / f'epoch-{epoch + 1}-augmentation.json', {'stats': stats, 'rows': augmented})
-        items = encode_rows(augmented, tokenizer, args.max_tokens, shuffle_options=True, seed=args.seed + epoch, layout=args.prompt_layout)
+        items = encode_rows(augmented, tokenizer, args.max_tokens, shuffle_options=True, seed=args.seed + epoch, layout=args.prompt_layout, task=args.task)
         random.Random(args.seed + epoch).shuffle(items)
         model.train()
         for start in range(0, len(items), accumulation):
@@ -259,9 +306,9 @@ def run(args, splits):
                 log.write(json.dumps(progress) + "\n")  # Preserve loss and memory measurements even if a later step fails.
             if step == 1 or step % 5 == 0 or args.smoke_test:
                 print(json.dumps(progress), flush=True)
-        validation = evaluate(model, encoded["validation"], letters, dtype)
+        validation = evaluate(model, encoded["validation"], letters, dtype, task=args.task)
         write_json(args.output / f"epoch-{epoch + 1}-validation.json", validation)
-        development = evaluate(model, encoded['development'], letters, dtype)
+        development = evaluate(model, encoded['development'], letters, dtype, task=args.task)
         write_json(args.output / f'epoch-{epoch + 1}-development.json', development)
         score = (min(v["recall"] for v in development["by_class"].values()), development["accuracy"], -development["loss"])
         history.append({"epoch": epoch + 1, "validation": {k: v for k, v in validation.items() if k != "rows"},
@@ -281,14 +328,14 @@ def run(args, splits):
     model.load_adapter(str(args.output / "best-adapter"), adapter_name="selected", is_trainable=False)
     model.set_adapter("selected")  # Verify the saved adapter can be reloaded before reporting completion.
     if args.smoke_test:
-        reloaded = evaluate(model, encoded["validation"], letters, dtype)
+        reloaded = evaluate(model, encoded["validation"], letters, dtype, task=args.task)
         if any(max(abs(a - b) for a, b in zip(old["probabilities_by_option_order"], new["probabilities_by_option_order"])) > 1e-3
                for old, new in zip(validation["rows"], reloaded["rows"])):
             raise RuntimeError("Reloaded smoke adapter changed decision probabilities unexpectedly")
         write_json(args.output / "reloaded-validation.json", reloaded)
         print("GPU smoke test passed: finite forward/backward, nonzero gradients, and matching saved/reloaded adapter.", flush=True)
     else:
-        test = evaluate(model, encode_rows(splits["test"], tokenizer, args.max_tokens, layout=args.prompt_layout), letters, dtype)
+        test = evaluate(model, encode_rows(splits["test"], tokenizer, args.max_tokens, layout=args.prompt_layout, task=args.task), letters, dtype, task=args.task)
         write_json(args.output / "final-test.json", test)
         print("Final synthetic test:", json.dumps({k: v for k, v in test.items() if k != "rows"}), flush=True)
     write_json(args.output / "completion.json", {"completed": True, "smoke_test": args.smoke_test,
@@ -303,26 +350,35 @@ def run(args, splits):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", type=Path, default=ROOT / "data/classifier/synthetic-pilot-v2.jsonl")
-    parser.add_argument("--dev-dataset", type=Path, default=ROOT / "data/classifier/realistic-dev-v2.jsonl")
-    parser.add_argument("--output", type=Path, default=ROOT / "runs" / ("classifier-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")))
+    parser.add_argument('--task', choices=('routing', 'participation'), default='routing')
+    parser.add_argument("--dataset", type=Path)
+    parser.add_argument("--dev-dataset", type=Path)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--model", default="Mapika/decider-2b")
     parser.add_argument("--revision", default=DEFAULT_REVISION)
     parser.add_argument("--epochs", type=int, default=2)
-    parser.add_argument('--prompt-layout', choices=('state_first', 'schema_first'), default='state_first',
-                        help='schema_first puts fixed question/options before message; this is a separate v4 experiment')
+    parser.add_argument('--prompt-layout', choices=('state_first', 'schema_first'),
+                        help='Defaults: routing state_first; participation schema_first')
     parser.add_argument("--rank", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--accumulation", type=int, default=16)
-    parser.add_argument("--max-tokens", type=int, default=384)
+    parser.add_argument("--max-tokens", type=int)
     parser.add_argument("--seed", type=int, default=417)
     parser.add_argument("--check-data", action="store_true", help="validate dataset without GPU packages, downloads or training")
     parser.add_argument("--smoke-test", action="store_true", help="two optimizer steps on eight training rows, with an eight-row validation check")
+    parser.add_argument('--local-files-only', action='store_true', help='Use cached weights/tokenizer at an exact revision without network access')
     args = parser.parse_args()
+    participation = args.task == 'participation'
+    args.dataset = args.dataset or ROOT / ('data/participation/synthetic-pilot-v1.jsonl' if participation else 'data/classifier/synthetic-pilot-v2.jsonl')
+    args.dev_dataset = args.dev_dataset or ROOT / ('data/participation/development-v1.jsonl' if participation else 'data/classifier/realistic-dev-v2.jsonl')
+    args.output = args.output or ROOT / 'runs' / (('participation-' if participation else 'classifier-') + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
+    args.prompt_layout = args.prompt_layout or ('schema_first' if participation else 'state_first')
+    if args.max_tokens is None:
+        args.max_tokens = 768 if participation else 384  # Conversation context needs a measured, explicit larger budget.
     if args.epochs < 1 or args.rank < 1 or args.accumulation < 1 or args.max_tokens < 128 or not 0 < args.learning_rate < 1:
         parser.error("Invalid training hyperparameter")
-    splits = load_dataset(args.dataset)
-    development = load_development(args.dev_dataset, splits)
+    splits = load_dataset(args.dataset, task=args.task)
+    development = load_development(args.dev_dataset, splits, task=args.task)
     print(json.dumps({"counts": {s: dict(Counter(r["label"] for r in rows)) for s, rows in splits.items()},
                       "development_rows": len(development),
                       "synthetic_draft_rows": sum(r.get("review_status") != "approved" for rows in splits.values() for r in rows)}, indent=2), flush=True)

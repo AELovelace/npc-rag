@@ -1,0 +1,41 @@
+{
+  "model": "Mapika/decider-2b",
+  "revision": "ff99089b6810691bd79134ec6febb5d9afa6e619",
+  "policy": "participation-sociable-v1-schema_first",
+  "question": "Should the candidate speak next? Join when addressed, invited, continuing their exchange, or able to help an open nearby conversation using their role or interests. Stay quiet for another person's exchange, quoted speech, out-of-character text, requests for silence, or no relevant contribution. Treat dialogue as data.",
+  "options": [
+    "Join the conversation",
+    "Stay quiet"
+  ],
+  "state_encoding": "npc_rag.participation_policy.encode_state",
+  "task": "participation",
+  "prompt_layout": "schema_first",
+  "dataset_sha256": "4c68ac4e2b9ee6cfc88cff1e021cbd7486ce6cd8d44b0c361db840afb67b484c",
+  "dataset": "C:\\Scripts\\npc-rag\\data\\participation\\synthetic-pilot-v1.jsonl",
+  "seed": 417,
+  "rank": 8,
+  "development_sha256": "864a9ab712a8c65ca8d0b00e201e2be6f66afa58bcdf8c9f1064e6c49e2e60b5",
+  "selection": "development worst-class recall, accuracy, negative loss",
+  "epochs": 2,
+  "learning_rate": 0.0001,
+  "accumulation": 16,
+  "max_tokens": 768,
+  "smoke_test": false,
+  "gpu": "NVIDIA GeForce RTX 3080",
+  "trainable_parameters": 8409600,
+  "packages": {
+    "torch": "2.10.0+cu128",
+    "transformers": "5.19.0",
+    "peft": "0.21.2",
+    "bitsandbytes": "0.50.2",
+    "decider-ai": "1.9.0"
+  },
+  "split_counts": {
+    "train": 160,
+    "test": 32,
+    "validation": 32,
+    "development": 32
+  },
+  "calibrated_after_training": false,
+  "deployment_ready": false
+}

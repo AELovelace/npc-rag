@@ -5,6 +5,7 @@ from dataclasses import replace
 import os
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import nullcontext
 from types import SimpleNamespace
 from concurrent.futures.process import BrokenProcessPool
 
@@ -241,6 +242,64 @@ def spawned_decide(message):
 
 def spawned_stop():
     return None
+
+
+def spawned_crash_start(settings, device):
+    os._exit(17)  # Reproduce a native abort after weights load but before readiness.
+
+
+def test_native_abort_during_startup_never_marks_pool_ready(settings):
+    async def run():
+        factory = lambda device: ProcessWorker(device, operations=(spawned_crash_start, spawned_decide, spawned_stop))
+        pool = pool_for(settings, factory=factory)
+        with pytest.raises(RuntimeError, match="CUDA0.*startup inference"):
+            await pool.start()
+        assert not await pool.health()
+        assert all(not w.healthy and w.executor._shutdown_thread for w in pool._workers)
+        await pool.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_worker_runs_real_decision_path_before_readiness(settings, monkeypatch, fails):
+    from npc_rag import decider_pool
+    calls = []
+
+    class Backend:
+        def __init__(self, config):
+            self._worker = SimpleNamespace(shutdown=lambda **kwargs: None)
+
+        def _load(self):
+            calls.append("load")
+
+        def _decide(self, message):
+            assert message == "A quiet afternoon sounds pleasant."
+            calls.append("decode")
+            if fails:
+                raise RuntimeError("native inference failed")
+
+        def view(self):
+            calls.append("ready")
+            return metadata(settings)
+
+        def _unload(self):
+            calls.append("unload")
+
+    monkeypatch.setattr("npc_rag.classifier_backend.DeciderClassifier", Backend)
+    monkeypatch.setattr(decider_pool, "pinned_device", lambda name: nullcontext(card(0)))
+    monkeypatch.setattr(decider_pool, "_native_backend", None)
+    try:
+        if fails:
+            with pytest.raises(RuntimeError, match="inference failed"):
+                decider_pool._worker_start(settings, card(0))
+            assert calls == ["load", "decode"]
+        else:
+            result = decider_pool._worker_start(settings, card(0))
+            assert calls == ["load", "decode", "ready"]
+            assert result["metadata"]["startup_inference_ms"] >= 0
+    finally:
+        decider_pool._worker_stop()
+    assert calls[-1] == "unload"
 
 
 def orphan_parent(connection):

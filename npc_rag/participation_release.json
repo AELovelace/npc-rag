@@ -1,0 +1,63 @@
+{
+  "name": "decider-chat-0-1",
+  "download_url": "https://lidoll.dev/gguf/decider-chat-0-1.gguf",
+  "support_url": "https://lidoll.dev/gguf/decider-chat-0-1-support.zip",
+  "files": {
+    "decider-chat-0-1.gguf": {
+      "bytes": 1274396192,
+      "sha256": "c18c3964eb96e4760beb341c79f4b7b226e40e9c06e24d6dd2f7444c372eae5a"
+    },
+    "tokenizer.json": {
+      "bytes": 19989325,
+      "sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523"
+    },
+    "tokenizer_config.json": {
+      "bytes": 1159,
+      "sha256": "bd549140011d8ca07845b132053c174d65354a955b6c313859eddc1b2f62ad07"
+    },
+    "chat_template.jinja": {
+      "bytes": 7908,
+      "sha256": "306abaf09cf3a6c0d14128373a72925bda3d7de2616a5642804d9768c7d2f78c"
+    },
+    "decider_config.json": {
+      "bytes": 1377,
+      "sha256": "3e5c4a28a059d97a9fea184733701ec73c4e249efa794eb1b11535724e10fb26"
+    },
+    "routing_policy.json": {
+      "bytes": 1591,
+      "sha256": "21ab3895968978cb1ab340cb226a0c0ecf8646671e8ef7029b516ab3602072ec"
+    },
+    "config.json": {
+      "bytes": 1865,
+      "sha256": "400ce31ab2aaacb864b02381a126bde705952a817e292467e12fbdd591f08e04"
+    },
+    "merge_provenance.json": {
+      "bytes": 310,
+      "sha256": "e4bc2b2b56ad1215a2ce27c26d9bef476ac68471485d5e66f6450792bd6304e0"
+    },
+    "qualification.json": {
+      "bytes": 1375,
+      "sha256": "9a28a60a2d14c10103eb23c8e37ffbfc8706620c9c812aed2a8cac4a073a77b3"
+    },
+    "LICENSE.txt": {
+      "bytes": 11560,
+      "sha256": "3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5"
+    },
+    "NOTICE.txt": {
+      "bytes": 301,
+      "sha256": "2d5d1edcdf8801e5edf516b29f160cf9c7a518e60b58dc6f983b9e28215b1965"
+    },
+    "HOSTING.txt": {
+      "bytes": 837,
+      "sha256": "b995f4d3564fbf5692eabcd218cc358b3641558a18fe01d515435453513f41d3"
+    },
+    "manifest.json": {
+      "bytes": 2713,
+      "sha256": "d143a5adc62c650e3c90f6274c260b93d00acb39c3bb98fd93d03899ca3c5b79"
+    }
+  },
+  "support_archive": {
+    "bytes": 3925576,
+    "sha256": "c2da31e3c07f3469db8aba92bc9057b1eb9b2008727af1ea35581cf1e7207dc6"
+  }
+}

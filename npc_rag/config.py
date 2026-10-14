@@ -30,6 +30,13 @@ def _env_int(name: str, default: int) -> int:
     return int(_env(name, str(default)))
 
 
+def _env_bool(name: str, default=False) -> bool:
+    value = _env(name, 'true' if default else 'false').lower()
+    if value not in ('true', 'false', '1', '0', 'on', 'off'):
+        raise ValueError(f'{name} must be true or false')
+    return value in ('true', '1', 'on')
+
+
 def _env_float(name: str, default: float) -> float:
     return float(_env(name, str(default)))
 
@@ -121,10 +128,15 @@ class Settings:
     decider_gpu_layers: int = 0          # CPU by default; -1 offloads all layers with a compatible build.
     decider_gpu_devices: str = "auto"    # GPU mode: one worker per detected card, or explicit CUDA0,Vulkan0 names.
     decider_context: int = 4096          # Entire prompt capacity, including the decision instructions.
+    participation_enabled: bool = False  # Opt-in second model for JOIN/QUIET, served on this same HTTP port.
+    participation_model: str = 'lidoll/decider-chat-0-1'
+    participation_timeout: float = 10.0
     rag_keyword_coverage: float = 0.5    # Share of a message's meaningful words one wiki chunk must hold for the keyword rule; above 1 disables it.
     rag_keyword_dense: float = 0.62      # Wiki score the keyword rule still requires (below RAG_GAME_EVIDENCE, above unrelated chat).
 
     def __post_init__(self):
+        if not self.participation_model.strip() or not math.isfinite(self.participation_timeout) or not 0 < self.participation_timeout <= 120:
+            raise ValueError('PARTICIPATION_MODEL and a timeout from 0 to 120 seconds are required')
         if self.classifier_backend not in ("llamacpp", "decider"):
             raise ValueError("CLASSIFIER_BACKEND must be llamacpp or decider")
         if not self.decider_model.strip() or not self.decider_gguf_file.endswith(".gguf"):
@@ -204,6 +216,9 @@ def load_settings(env_file: str | None = None) -> Settings:
         decider_gpu_layers=_env_int("DECIDER_GPU_LAYERS", 0),
         decider_gpu_devices=",".join(d.strip() for d in _env("DECIDER_GPU_DEVICES", "auto").split(",")),
         decider_context=_env_int("DECIDER_CONTEXT", 4096),
+        participation_enabled=_env_bool('PARTICIPATION_ENABLED'),
+        participation_model=_env('PARTICIPATION_MODEL', 'lidoll/decider-chat-0-1'),
+        participation_timeout=_positive_float('PARTICIPATION_TIMEOUT', 10.0),
         rag_keyword_coverage=_env_float("RAG_KEYWORD_COVERAGE", 0.5),
         rag_keyword_dense=_env_float("RAG_KEYWORD_DENSE", 0.62),
     )

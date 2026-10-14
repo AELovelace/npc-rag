@@ -27,6 +27,7 @@ def settings(tmp_path):
         load_settings(),
         llm_url="http://llama.test", classifier_url="http://classifier.test", api_key="", llm_api_key="",
         classifier_backend="llamacpp", decider_model="Mapika/decider-2b-GGUF",
+        participation_enabled=False,  # Live opt-in settings must never load weights in unrelated unit tests.
         decider_gguf_file="decider-2b-v11-Q4_K_M.gguf", decider_threads=4,
         decider_gpu_layers=0, decider_gpu_devices="auto", decider_context=4096,  # Never inherit live GPU worker selection in tests.
         wiki_source=str(FIXTURE_WIKI), wiki_public_url="https://wiki.test/wiki/",

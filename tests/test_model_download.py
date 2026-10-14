@@ -66,6 +66,24 @@ def test_first_install_and_verified_offline_restart(release, monkeypatch):
     assert download.ensure_custom_decider(result) == result
 
 
+def test_separate_release_filename_uses_same_verified_installer(release):
+    filename = 'decider-chat-0-1.gguf'
+    files = {filename if name == download.CUSTOM_GGUF else name: data for name, data in release.files.items()}
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, 'w') as bundle:
+        for name, content in files.items():
+            if name != filename:
+                bundle.writestr(name, content)
+    release.payloads['/support'] = archive.getvalue()
+    spec = {**release.spec, 'files': {name: _spec(data) for name, data in files.items()},
+            'support_archive': _spec(archive.getvalue())}
+    release.manifest.write_text(json.dumps(spec))
+    result = download.ensure_custom_decider(release.destination, release_manifest=release.manifest,
+              config_loader=download._repository_configs, gguf_file=filename, model_name='decider-chat-0-1')
+    assert (result / filename).read_bytes() == files[filename]
+    assert not (result / download.CUSTOM_GGUF).exists()
+
+
 def test_git_config_update_applies_without_asset_download(release):
     download.ensure_custom_decider(release.destination)
     release.calls.clear()
@@ -141,8 +159,10 @@ def test_unexpected_archive_path_is_rejected(tmp_path):
 
 
 def test_custom_backend_uses_checked_local_files_and_reports_identity(settings, release, monkeypatch):
+    monkeypatch.setattr("npc_rag.native_logging._callback", None)  # Restore the process callback reference after this fake library.
     monkeypatch.setitem(sys.modules, "decider.infer", SimpleNamespace(Decider=object))
-    monkeypatch.setitem(sys.modules, "llama_cpp", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "llama_cpp", SimpleNamespace(
+        llama_log_callback=lambda callback: callback, llama_log_set=lambda *args: None))
     monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(
         hf_hub_download=lambda *a: pytest.fail("Custom release must not use Hugging Face")))
     monkeypatch.setattr(classifier_backend, "create_routing_decider", lambda source, **kw: SimpleNamespace(
@@ -157,6 +177,7 @@ def test_custom_backend_uses_checked_local_files_and_reports_identity(settings, 
             assert await backend.health()
             assert backend._model.source == str(release.destination)
             assert backend._model.options["gguf_file"] == download.CUSTOM_GGUF  # Overrides a legacy .env filename.
+            assert backend._model.options["gguf_options"]["verbose"] is True  # Do not let upstream silence native errors.
             assert backend.view()["release"] == download.CUSTOM_MODEL
             assert (await backend.model_identity())[1:3] == (str(release.destination), download.CUSTOM_GGUF)
         finally:

@@ -10,6 +10,7 @@ import logging
 import multiprocessing
 import os
 import threading
+import time
 
 from .decider_devices import detect_devices, pinned_device, select_devices
 from .llm import LLMError
@@ -36,7 +37,10 @@ def _worker_start(settings, device):
     _native_backend = DeciderClassifier(settings)
     with pinned_device(device["name"]) as actual:
         _native_backend._load()  # Reuse the qualified tokenizer, prompt, probabilities and model provisioning.
+    began = time.perf_counter()
+    _native_backend._decide("A quiet afternoon sounds pleasant.")  # Exercise decode before advertising readiness; no player data/cache.
     metadata = _native_backend.view()
+    metadata["startup_inference_ms"] = round((time.perf_counter() - began) * 1000)
     return {"metadata": metadata, "device": actual, "pid": os.getpid()}
 
 
@@ -72,7 +76,11 @@ class ProcessWorker:
 
     async def start(self, settings):
         self.pending = asyncio.get_running_loop().run_in_executor(self.executor, self.operations[0], settings, self.device)
-        result = await asyncio.shield(self.pending)
+        try:
+            result = await asyncio.shield(self.pending)
+        except BrokenProcessPool:
+            raise RuntimeError(f"Decider worker {self.device['name']} exited during model loading/startup inference; "
+                               "check the preceding native CUDA/Vulkan error in the RAG log") from None
         self.metadata, self.device, self.pid = result["metadata"], result["device"], result["pid"]
         self.pending = None
         self.healthy = True
@@ -108,9 +116,10 @@ async def _discover():
 class DeciderPool:
     """Dispatch to the next idle GPU; keep cache and wiki routing in the existing RAG service."""
 
-    def __init__(self, settings, *, discover=None, worker_factory=ProcessWorker):
+    def __init__(self, settings, *, discover=None, worker_factory=ProcessWorker, result_factory=None):
         self.settings = settings
         self._discover, self._worker_factory = discover or _discover, worker_factory
+        self._result_factory = result_factory
         self._workers = []
         self._available = deque()
         self._changed = asyncio.Event()
@@ -128,6 +137,7 @@ class DeciderPool:
             for device in devices:
                 worker = self._worker_factory(device)
                 self._workers.append(worker)  # Include a partially loaded worker in failure cleanup.
+                logger.info("Loading and testing Decider worker: %s (%s)", device["name"], device["description"])
                 await worker.start(child_settings)
                 if self._identity(worker) != self._identity(self._workers[0]):
                     raise RuntimeError("Decider worker models or routing policies disagree")
@@ -182,7 +192,7 @@ class DeciderPool:
         pending.add_done_callback(lambda future: self._finished(worker, future))
         try:
             category, probability = await asyncio.shield(pending)
-            return ModelDecision(category, probability)
+            return (self._result_factory or ModelDecision)(category, probability)
         except Exception as exc:
             raise LLMError(f"Decider inference failed ({type(exc).__name__})") from None
 
@@ -196,6 +206,7 @@ class DeciderPool:
         base = dict(self._workers[0].metadata) if self._workers else {"backend": "decider"}
         workers = [{"device": w.device["name"], "description": w.device["description"],
                     "device_id": w.device.get("device_id"), "pid": w.pid, "healthy": w.healthy,
+                    "startup_inference_ms": w.metadata.get("startup_inference_ms"),
                     "busy": w.pending is not None, "completed": w.completed, "failures": w.failures}
                    for w in self._workers]
         return {**base, "execution": "gpu-process-pool", "device_selection": self.settings.decider_gpu_devices,

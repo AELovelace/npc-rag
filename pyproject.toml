@@ -22,4 +22,4 @@ pythonpath = ["."]
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.setuptools.package-data]
-npc_rag = ["decider_release.json", "decider_config/*.json", "decider_config/*.jinja"]  # Configs travel with Git/code releases.
+npc_rag = ["decider_release.json", "decider_config/*.json", "decider_config/*.jinja", "participation_release.json", "participation_config/*.json", "participation_config/*.jinja"]  # Configs travel with Git/code releases.

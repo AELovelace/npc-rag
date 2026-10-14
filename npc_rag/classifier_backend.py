@@ -92,6 +92,8 @@ class DeciderClassifier:
                 import llama_cpp  # Fail at startup if the optional native backend was not installed.
             except ImportError as exc:
                 raise RuntimeError("Install requirements-decider.txt in the RAG environment before enabling Decider") from exc
+            from .native_logging import install_native_error_logging
+            install_native_error_logging(llama_cpp)
             factory = create_routing_decider
         else:
             factory = self._factory  # Tests substitute the native model without downloading any weights.
@@ -112,11 +114,12 @@ class DeciderClassifier:
             self._prompt_layout = checkpoint_layout(config)
             # Upstream tolerates missing config; require it here so an offline/error path cannot lose calibration silently.
         layout_options = {'prompt_order': self._prompt_layout} if self._factory is None else {}
+        log_options = {'verbose': True} if self._factory is None else {}  # Bypass upstream's all-level log silencer.
         self._model_source = source  # Health and decision-cache identity describe the actual local release.
         self._model = factory(source, **layout_options, gguf_file=self._gguf_file,
                               gguf_options={"n_gpu_layers": self.settings.decider_gpu_layers,
                                             "n_threads": self.settings.decider_threads,
-                                            "n_ctx": self.settings.decider_context, "n_seq_max": 1})
+                                            "n_ctx": self.settings.decider_context, "n_seq_max": 1, **log_options})
 
     async def start(self):
         await self._native(self._load)  # Load before readiness; first launch may download the model/tokenizer/config.

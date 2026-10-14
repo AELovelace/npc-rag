@@ -135,13 +135,15 @@ def _unpack(archive: Path, stage: Path, specs: dict) -> None:
                 raise RuntimeError(f"Support file SHA-256 verification failed: {name}")
 
 
-def ensure_custom_decider(destination: Path | None = None) -> Path:
+def ensure_custom_decider(destination: Path | None = None, *, release_manifest=None, config_loader=None,
+                          gguf_file=None, model_name='decider0-1') -> Path:
     """Reuse a verified local release offline, or download and repair missing/corrupt files."""
-    release = json.loads(RELEASE_MANIFEST.read_text(encoding="utf-8"))
-    destination = (destination or ROOT / "data/models/decider0-1").resolve()
+    release = json.loads((release_manifest or RELEASE_MANIFEST).read_text(encoding="utf-8"))
+    gguf_file = gguf_file or CUSTOM_GGUF
+    destination = (destination or ROOT / 'data/models' / model_name).resolve()
     destination.mkdir(parents=True, exist_ok=True)
     try:
-        configs = _repository_configs()
+        configs = (config_loader or _repository_configs)()
         specs = dict(release["files"])
         for name, content in configs.items():
             specs[name] = {"bytes": len(content), "sha256": hashlib.sha256(content).hexdigest()}
@@ -157,14 +159,14 @@ def ensure_custom_decider(destination: Path | None = None) -> Path:
             with tempfile.TemporaryDirectory(prefix=".download-", dir=destination) as temporary:
                 stage = Path(temporary)
                 with httpx.Client(timeout=httpx.Timeout(60, connect=15), follow_redirects=True) as client:
-                    support = {name: spec for name, spec in release["files"].items() if name != CUSTOM_GGUF}
+                    support = {name: spec for name, spec in release["files"].items() if name != gguf_file}
                     if (missing - configs.keys()) & support.keys():
                         archive = stage / "support.zip"
                         _download(client, release["support_url"], archive, release["support_archive"])
                         _unpack(archive, stage, support)
-                    if CUSTOM_GGUF in missing:
-                        _download(client, release["download_url"], stage / CUSTOM_GGUF,
-                                  release["files"][CUSTOM_GGUF])
+                    if gguf_file in missing:
+                        _download(client, release["download_url"], stage / gguf_file,
+                                  release["files"][gguf_file])
                 for name in missing & configs.keys():
                     (stage / name).write_bytes(configs[name])  # Repo config wins even when the ZIP carries older copies.
                 # Publish only fully verified files. Existing valid files are never replaced.
@@ -174,8 +176,8 @@ def ensure_custom_decider(destination: Path | None = None) -> Path:
             return destination
     except (OSError, ValueError, KeyError, RuntimeError, httpx.HTTPError, zipfile.BadZipFile) as exc:
         raise RuntimeError(
-            f"Custom Decider startup check failed: {exc}. Ensure both decider0-1.gguf and "
-            "decider0-1-support.zip are hosted at https://lidoll.dev/gguf/, check "
-            "npc_rag/decider_config in this checkout, and restart. "
+            f"Custom Decider startup check failed: {exc}. Ensure both {gguf_file} and "
+            f"{model_name}-support.zip are hosted at https://lidoll.dev/gguf/, check "
+            "the model's config directory in this checkout, and restart. "
             "No base-model fallback was loaded."
         ) from exc

@@ -1,0 +1,27 @@
+{
+  "task": "participation",
+  "policy": "sociable",
+  "total_rows": 256,
+  "families": 64,
+  "splits": {
+    "train": 160,
+    "test": 32,
+    "validation": 32,
+    "development": 32
+  },
+  "labels": {
+    "join": 128,
+    "quiet": 128
+  },
+  "sha256_utf8_lf": {
+    "synthetic-pilot-v1.jsonl": "2256b31c396e635093b686c341393a4615d95eaa0ea697a714ba09a1b0889c5a",
+    "development-v1.jsonl": "ec1bf8c6277f989edfcf494d0e549ff8f12489911265ea488d2b6c245ba7f5fb"
+  },
+  "review_status": "synthetic_draft",
+  "deployment_ready": false,
+  "limitations": [
+    "Role variants and paired contexts are related examples.",
+    "Synthetic held-out scenarios are not a real-player acceptance test.",
+    "Labels describe sociable participation, not existing candidate-selection rules."
+  ]
+}

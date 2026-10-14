@@ -4,6 +4,7 @@ import ctypes
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -26,10 +27,19 @@ def main():
     parser.add_argument('--run', type=Path, default=ROOT / 'runs/classifier-v3-first-pass')
     parser.add_argument('--output', type=Path, default=ROOT / 'runs/releases/decider0-1-q4km')
     parser.add_argument('--converter-root', type=Path, default=ROOT / 'runs/gguf-export-tools' / LLAMA_CPP_REVISION)
+    parser.add_argument('--task', choices=('routing', 'participation'), default='routing')
+    parser.add_argument('--name', default='decider0-1')
     args = parser.parse_args()
+    if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', args.name):
+        raise ValueError('Release name must contain lowercase letters, digits and hyphens only')
+    if args.task == 'participation' and args.name == 'decider0-1':
+        raise ValueError('Participation requires its own release name')
+    from merge_classifier import validate_run
+    metadata = json.loads((args.run / 'run.json').read_text())
+    validate_run(metadata, json.loads((args.run / 'completion.json').read_text()), args.task)
     merged = args.run / 'merged'
     provenance = json.loads((merged / 'merge_provenance.json').read_text())
-    if provenance.get('quantized') or not (merged / 'model.safetensors').is_file():
+    if provenance.get('task', 'routing') != args.task or provenance.get('quantized') or not (merged / 'model.safetensors').is_file():
         raise ValueError('Expected the selected, merged BF16 checkpoint')
     if args.output.exists():
         raise ValueError('Output already exists; choose a fresh export directory')
@@ -37,11 +47,11 @@ def main():
     if version('llama-cpp-python') != '0.3.36':
         raise ValueError('This export is pinned to llama-cpp-python 0.3.36')
     args.output.mkdir(parents=True)
-    intermediate = args.output / 'decider0-1-bf16.gguf'
-    destination = args.output / 'decider0-1.gguf'
+    intermediate = args.output / (args.name + '-bf16.gguf')
+    destination = args.output / (args.name + '.gguf')
     log = args.output / 'conversion.log'
     command = [sys.executable, str(args.converter_root / 'convert_hf_to_gguf.py'), str(merged),
-               '--outtype', 'bf16', '--no-mtp', '--outfile', str(intermediate), '--model-name', 'LiDollQuest Decider 0.1']
+               '--outtype', 'bf16', '--no-mtp', '--outfile', str(intermediate), '--model-name', 'LiDollQuest ' + args.name]
     # HF retains an MTP-layer count but these classifier weights have no MTP tensors; omit that unused draft layer.
     print('Converting selected BF16 weights to GGUF...', flush=True)
     with log.open('w', encoding='utf-8') as handle:
@@ -59,18 +69,18 @@ def main():
         raise RuntimeError(f'Quantization failed with code {result}')
     for name in SUPPORT_FILES:
         shutil.copy2(merged / name, args.output / name)
-    manifest = {'name': 'decider0-1', 'quantization': 'Q4_K_M',
-                'download_url': 'https://lidoll.dev/gguf/decider0-1.gguf',
+    manifest = {'name': args.name, 'task': args.task, 'policy': metadata['policy'], 'quantization': 'Q4_K_M',
+                'download_url': 'https://lidoll.dev/gguf/' + args.name + '.gguf',
                 'llama_cpp_revision': LLAMA_CPP_REVISION, 'llama_cpp_python': version('llama-cpp-python'),
                 'conversion_arguments': command[2:], 'mtp_excluded': True,
                 'source_weights_sha256': sha256(merged / 'model.safetensors'),
                 'converter_sha256': sha256(args.converter_root / 'convert_hf_to_gguf.py'),
                 'source_archive_sha256': sha256(args.converter_root / 'source.zip'),
                 'files': {name: {'bytes': (args.output / name).stat().st_size, 'sha256': sha256(args.output / name)}
-                          for name in ('decider0-1.gguf',) + SUPPORT_FILES},
+                          for name in (destination.name,) + SUPPORT_FILES},
                 'quantized_evaluation': 'pending', 'uploaded': False}
     (args.output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
-    print(json.dumps({'model': str(destination), **manifest['files']['decider0-1.gguf']}, indent=2), flush=True)
+    print(json.dumps({'model': str(destination), **manifest['files'][destination.name]}, indent=2), flush=True)
 
 
 if __name__ == '__main__':

@@ -1,5 +1,160 @@
 # npc-rag: the LiDollQuest tutorial NPC
 
+## Decider Chat 0.1 upload and B-test deployment
+
+Prepared Q4_K_M files are in `runs/releases/decider-chat-0-1-q4km/`:
+`decider-chat-0-1.gguf` (1,274,396,192 bytes) and `decider-chat-0-1-support.zip`
+(tokenizer, matching sidecars, license, checksums and qualification). Upload both beside
+the existing routing release at `https://lidoll.dev/gguf/`. SHA256SUMS.txt records their
+hashes. Native CPU evaluation scored 31/32 on each of development and test, with one
+missed join and zero unwanted joins per split. Each split has only eight synthetic
+families; this is an experimental B candidate, not a production behavior guarantee.
+
+After the prepared code is committed and pulled to both RAG hosts, add to their `.env`:
+
+```dotenv
+PARTICIPATION_ENABLED=true
+PARTICIPATION_MODEL=lidoll/decider-chat-0-1
+PARTICIPATION_TIMEOUT=10
+```
+
+Restart RAG. The startup check verifies/downloads the separate release and uses configs
+from `npc_rag/participation_config` in Git. Model/tokenizer assets are pinned in
+`npc_rag/participation_release.json`. No additional port is needed. Existing
+`DECIDER_GPU_LAYERS`, `DECIDER_GPU_DEVICES` and `DECIDER_THREADS` apply to this model too:
+GPU mode adds one participation worker/model per selected GPU while retaining routing.
+Allow memory for both models alongside generation. Every new worker must load and decode
+a synthetic input before startup succeeds. Offline restarts reuse verified cached files.
+
+`GET /health` exposes `participation.enabled`, `healthy`, policy and per-GPU workers.
+`POST /v1/participation/decide` accepts the bounded context described below, requires the
+existing NPC API key, and returns JOIN/QUIET, its uncalibrated score and timing. Disabled,
+unavailable or timed-out models return 503; invalid context returns 422. It has no decision
+cache, so a repeated message with different conversation context cannot reuse an old label.
+Timeouts never free a still-running native worker for overlapping inference.
+
+The updated game server can select this gate with `QUEST_PARTICIPATION_BACKEND=decider`
+and a restart; default/rollback is `qwen`. Candidate selection, direct-name bypasses,
+cooldowns and existing follow-up availability behavior stay the same for B. Its context
+includes only the active speaker/candidate exchange (up to four turns), nearby companion
+names and optional `online.participation.role`/`interests` from the catalog. It does not
+yet collect other nearby players' conversation history or broaden unsolicited candidates.
+No live game-server switch is needed to run the standalone B harness after RAG deployment.
+See the server README for its command. Set `PARTICIPATION_ENABLED=false` and restart to
+release the extra RAG workers; roll back the game gate first.
+
+## Experimental sociable participation classifier
+
+`python/train_classifier.py --task participation` trains a separate Decider adapter for
+JOIN/QUIET: should a nearby companion or NPC speak next? Doll selected a sociable policy:
+join direct invitations, ongoing exchanges and open conversation where the character has
+relevant knowledge or interests; respect other addressees, requests for quiet and OOC text.
+It does not replace the released GAME/CHAT checkpoint or the live Qwen participation gate.
+
+The input contract in `npc_rag/participation_policy.py` contains the candidate's name, kind,
+role and up to four interests; player name/message/kind; nearby names; up to four recent
+turns; and conversation/hiring flags. Only context enters the prompt. Labels, family IDs
+and scenario explanations stay outside it. JSON bounds reject oversized or unexpected
+fields. The default layout puts the fixed question/options first (`schema_first`); this
+alone does not enable native prefix caching or establish a latency improvement.
+
+The reproducible draft dataset has **256 rows from 64 scenario families**: 160 training,
+32 validation, 32 development for checkpoint selection and 32 final test. Each family has
+JOIN/QUIET contexts and companion/NPC variants, all kept in one split. Identical messages
+can require different decisions when their context changes. Candidate names in evaluation
+are separate from training. These are synthetic hypothetical roles, not the production NPC
+catalog, and the 32-row test represents only eight scenario families. Review and expand
+with recorded, context-rich game conversations before claiming player-facing quality.
+
+```powershell
+# Uses the existing separate NVIDIA training environment; the RTX 3080 smoke check works.
+powershell -ExecutionPolicy Bypass -File ps/Train-Participation.ps1 -CheckData
+powershell -ExecutionPolicy Bypass -File ps/Train-Participation.ps1 -SmokeTest
+powershell -ExecutionPolicy Bypass -File ps/Train-Participation.ps1
+# Add -LocalFilesOnly when the pinned training checkpoint/tokenizer are already cached.
+```
+
+Regenerate the pilot with `.venv/Scripts/python.exe python/build_participation_dataset.py`.
+Training uses the pinned original trainable Decider base, not `decider0-1.gguf`. Reports
+include unwanted interruptions (QUIET predicted JOIN), missed joins, JOIN precision and
+both class recalls. The existing 90% per-class training gate is only a pilot diagnostic,
+not release approval. The result is an uncalibrated LoRA adapter under `runs/participation-*`;
+the merge/export tools require explicit `--task participation` and a separate release name.
+The first GGUF/runtime preparation is described above; live activation remains opt-in.
+
+First completed pilot (2026-10-14): `runs/participation-v1-first-pass-r2-20261014` selected
+epoch 2 after 20 optimizer steps. Training/evaluation took 299.86 seconds on the RTX 3080,
+with 2.82 GiB peak allocated GPU memory. Development improved from 23/32 to 30/32; both
+remaining misses are variants of a dancer failing to join an open dance question. The
+untouched synthetic test scored 32/32 (eight families), with zero false joins/missed joins.
+Development JOIN recall remains 87.5%, so the pilot does not meet the 90% per-class gate
+on that split. The saved artifact is `best-adapter`, with `final-test.json` and
+`completion.json` beside it. It is not a GGUF release or a live-service benchmark. Broader
+reviewed conversations, context-matched Qwen comparison and native quantized evaluation
+are still needed. Current pilot prompts measured 155-176 tokens with the pinned tokenizer.
+
+Broader sociable deployment: the new decision now uses existing RAG HTTP port 9092 with
+a separate model identity and matching prompt encoder. To expand unsolicited replies,
+the game server must also allow relevant nearby
+candidates to reach the model: today's `addressees()` filters discard many unnamed lines
+before the Qwen gate. Keep earshot, consent/access settings, cooldown and stale-job checks
+in server code. Limit unsolicited replies to one chosen character per message; scoring
+every NPC independently without arbitration risks a chorus. Compare against Qwen with
+the same context, first in shadow mode, before switching decisions. Measure false joins,
+missed invitations, candidate count, gate latency and full replies under concurrent load.
+
+## Live classifier validation
+
+Vulkan recovery verified (2026-10-14): `192.168.1.188:9092` now completes native decisions
+on both GTX TITAN X workers (`Vulkan0`/`Vulkan1`). Live routing scored 76/80 held-out (95%)
+and 16/16 mixed (100%). The subsequent pooled 100-chat burst generated 100 replies without
+HTTP errors or availability fallbacks: median 8.669 s, p95 31.101 s. The Titan node's
+reply median was 19.212 s, with classification/generation phase medians 1.358/17.691 s.
+Generation is the dominant delay in that burst. The pooled sustained simulation completed
+678 requests without HTTP errors or availability fallbacks; generated-reply medians at
+1/2/4/8/16/24 concurrency were 1.380/1.391/1.990/3.606/4.948/1.702 s. All four workers
+remained healthy with zero failures (AMD completions 59/62; Titan 51/52). Repeated prompts,
+warm caches and enabled cloud overflow make this a capacity diagnostic, not a matched
+cold-cache A/B or production latency guarantee. The burst still misses the five-second median.
+Artifacts: `runs/live-decider01-titan-vulkan-accuracy-20261014.json` and server artifacts
+`decider01-all-vulkan-pooled-chat-20261014.json`, `decider01-all-vulkan-simulated-players-20261014.json`
+and its adjacent `-health-after.json`. Live health does not yet expose `startup_inference_ms`;
+this verifies actual inference, not deployment of the newer diagnostics patch below.
+
+CUDA failure follow-up (2026-10-14): the supplied log identifies both GTX TITAN X cards as
+compute capability 5.2 and shows fatal native CUDA errors on their first decode. The exact
+[0.3.36-cu124 wheel workflow](https://github.com/abetlen/llama-cpp-python/blob/v0.3.36-cu124/.github/workflows/build-wheels-cuda.yaml#L212)
+targets 6.0 and newer architectures and omits 5.2, a concrete compatibility mismatch and
+likely cause of the failure. The generic abort alone does not expose the CUDA error code.
+Stop RAG on that host, run `ps/Install-Decider.ps1 -Backend Vulkan`, and restart with
+`DECIDER_GPU_LAYERS=-1` and default `DECIDER_GPU_DEVICES=auto`. The replacement still needs
+successful inference and live validation; those checks subsequently passed as recorded above.
+
+Native warnings/errors now remain visible in stderr instead of being swallowed by Decider's
+quiet callback. Each GPU worker also performs one synthetic decision before reporting ready;
+a native abort during load/decode fails startup with the device name and a pointer to the log.
+Health includes each worker's `startup_inference_ms`. This check is outside player requests,
+the label cache and completed-request counters; it proves a short inference works, not full
+load capacity. The synthetic warmup uses the existing tokenizer, prompt and scoring path.
+Validation: 202 tests passed, three optional native tests skipped. A real cached GGUF CPU
+smoke check also classified one chat and one gameplay prompt correctly with the new logger.
+These local checks are separate from the successful Titan live validation recorded above.
+
+Multi-GPU live check (2026-10-14): both upgraded nodes initially reported two healthy workers
+and empty classifier caches. The RX 6800 XT/Vulkan node completed native work on both cards
+(30/32 decisions after burst plus accuracy) with zero failures, retaining 95% held-out and
+100% mixed accuracy. The GTX TITAN X/CUDA node lost both worker processes on their first
+inference (zero completions, one failure each); subsequent classification used wiki/social
+fallback only, scoring 85/96 overall. This is a failed CUDA deployment check, not a measured
+model accuracy regression; native error logs are needed to identify the cause. The pooled
+100-chat burst returned 100 generated replies, median 9.943 s and p95 31.209 s, but 45 CUDA-node
+requests used wiki classification fallback. Vulkan classification-phase median improved from
+4.891 to 0.464 s; its full-reply median was 6.885 s, versus 18.497 s on the degraded CUDA node.
+The sustained pooled simulation was withheld after the worker failures. Artifacts:
+`runs/live-decider01-multigpu-accuracy-20261014.json` and the server checkout's
+`artifacts/decider01-multigpu-pooled-chat-20261014.json`. Startup health/VRAM allocation alone
+did not establish successful inference on the CUDA rig.
+
 ## Automatic classifier workers per GPU
 
 With `CLASSIFIER_BACKEND=decider` and `DECIDER_GPU_LAYERS=-1`, startup now discovers the
@@ -73,6 +228,7 @@ of these commands from the updated checkout:
 
 ```powershell
 # NVIDIA CUDA rig (CUDA 12.4 wheel; suitable for Pascal-compatible builds as well):
+# This prebuilt wheel omits compute capability 5.2 (GTX TITAN X); use Vulkan on those cards.
 powershell -ExecutionPolicy Bypass -File ps/Install-Decider.ps1 -Backend Cuda
 
 # Vulkan rig, including AMD with a working Vulkan graphics driver:
