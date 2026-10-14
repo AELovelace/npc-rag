@@ -1,12 +1,20 @@
 <#
 .SYNOPSIS
     Install Decider in the existing RAG environment using a short Windows build path.
+.PARAMETER Backend
+    Auto preserves an installed native build. Cuda or Vulkan replaces it with the matching official GPU wheel.
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File ps\Install-Decider.ps1
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File ps\Install-Decider.ps1 -Backend Cuda
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File ps\Install-Decider.ps1 -Backend Vulkan
 #>
 param(
     [string]$Python = "",     # Defaults to the existing npc-rag virtual environment.
-    [string]$BuildTemp = ""   # Defaults to a one-letter folder at the checkout drive root, such as C:\t.
+    [string]$BuildTemp = "",  # Defaults to a one-letter folder at the checkout drive root, such as C:\t.
+    [ValidateSet('Auto', 'Cuda', 'Vulkan')]
+    [string]$Backend = 'Auto'
 )
 $ErrorActionPreference = "Stop"
 
@@ -65,13 +73,45 @@ try:
 except PackageNotFoundError:
     sys.exit(1)
 '@
-    & $Python -c $nativeCheck
-    if ($LASTEXITCODE -ne 0) { Initialize-DeciderCompiler } # Fail before downloading/building when the native package needs compilation.
+    if ($Backend -eq 'Auto') {
+        & $Python -c $nativeCheck
+        if ($LASTEXITCODE -ne 0) { Initialize-DeciderCompiler } # The original source-install path still checks its toolchain.
+    } else {
+        $wheelBackend = if ($Backend -eq 'Cuda') { 'cu124' } else { 'vulkan' }
+        $wheelIndex = "https://abetlen.github.io/llama-cpp-python/whl/$wheelBackend"
+        Write-Host "Replacing llama-cpp-python with the official $Backend 0.3.36 wheel. Stop this RAG service first."
+        # Use only this backend's index, and force replacement even when the CPU build has the same version.
+        # No dependency reinstall here: the requirements step below supplies any missing Python packages.
+        & $Python -m pip install --force-reinstall --no-cache-dir --no-deps --only-binary=:all: `
+            --index-url $wheelIndex 'llama-cpp-python==0.3.36'
+        if ($LASTEXITCODE -ne 0) {
+            throw "$Backend wheel installation failed. Stop RAG to release native DLLs; verify Windows x64/Python compatibility and access to $wheelIndex. No CPU/source fallback was attempted."
+        }
+    }
     Write-Host "Installing Decider with temporary build directory $BuildTemp"
     & $Python -m pip install --no-cache-dir -r (Join-Path $RagRoot 'requirements-decider.txt')
     if ($LASTEXITCODE -ne 0) { throw "Decider installation failed; see the pip error above. Extraction errors are separate from compiler errors; source compilation needs Visual Studio C++ Build Tools and CMake." }
     & $Python -c "from decider.infer import Decider; import llama_cpp" # Verify native imports without loading or downloading weights.
     if ($LASTEXITCODE -ne 0) { throw "Decider native imports failed; resolve the dependency/DLL error before enabling the backend." }
+    $gpuCheck = @'
+import sys
+import llama_cpp
+llama_cpp.llama_backend_init()  # Initialize registered backends before asking about available GPU offload.
+try:
+    supported = bool(llama_cpp.llama_supports_gpu_offload())
+    print('GPU offload supported:', supported)
+    print(llama_cpp.llama_print_system_info().decode('utf-8', errors='replace'))
+    sys.exit(0 if sys.argv[1] == 'Auto' or supported else 1)
+finally:
+    llama_cpp.llama_backend_free()
+'@
+    & $Python -c $gpuCheck $Backend
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Backend was requested but GPU offload is unavailable. Check the GPU driver and native DLL dependencies before setting DECIDER_GPU_LAYERS=-1."
+    }
+    if ($Backend -ne 'Auto') {
+        Write-Host "GPU backend verified. Set DECIDER_GPU_LAYERS=-1 in .env, restart RAG, and verify model offloading with GPU monitoring."
+    }
     Write-Host "Decider dependencies installed. Run the classifier evaluation before enabling the backend." -ForegroundColor Green
 } finally {
     $env:TEMP = $oldTemp

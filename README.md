@@ -1,5 +1,62 @@
 # npc-rag: the LiDollQuest tutorial NPC
 
+## Enable Decider GPU offload on existing Windows rigs
+
+Sakura and RAG use separate native libraries: GPU generation in Sakura does not enable GPU
+classification in Python. Stop the RAG service before replacing its loaded DLLs, then run one
+of these commands from the updated checkout:
+
+```powershell
+# NVIDIA CUDA rig (CUDA 12.4 wheel; suitable for Pascal-compatible builds as well):
+powershell -ExecutionPolicy Bypass -File ps/Install-Decider.ps1 -Backend Cuda
+
+# Vulkan rig, including AMD with a working Vulkan graphics driver:
+powershell -ExecutionPolicy Bypass -File ps/Install-Decider.ps1 -Backend Vulkan
+```
+
+Both options force-reinstall the official `llama-cpp-python==0.3.36` wheel from its backend-specific
+index, bypassing cached CPU builds. They do not need a C++ compiler or Vulkan SDK. Missing wheels
+fail explicitly rather than silently installing a CPU build. `-Backend Auto` (the default) retains
+the existing installation behavior. After installing dependencies, the helper initializes the
+native backend and verifies GPU offload support; a requested GPU backend cannot finish successfully
+with offload unavailable. This verifies capability, not this model's actual placement or speed.
+
+Set `DECIDER_GPU_LAYERS=-1` in `.env` and restart RAG with the usual launcher/task. Confirm GPU
+use using native loading logs and GPU monitoring; `/health.classification.gpu_layers` reports the
+requested setting only. Keep model, threads, context, routing and overflow settings identical for
+the CPU/GPU A/B. Revert to `DECIDER_GPU_LAYERS=0` and restart for CPU execution. The GPU rig still
+needs a compatible driver/runtime; DLL errors must be resolved before benchmarking.
+
+Official backend installation documentation: https://github.com/abetlen/llama-cpp-python#installation
+
+## Live custom-Decider verification (2026-10-14)
+
+Both nodes (`47.51.162.106:9092` and `192.168.1.188:9092`) now report managed release
+`lidoll/decider0-1`, `decider0-1.gguf`, `game-chat-v3`, four CPU threads, zero GPU layers and
+one native classification slot. Each passed the unchanged deployed hybrid accuracy suite:
+**76/80 held-out (95%), 16/16 mixed (100%), 92/96 overall**; GAME 44/48 and CHAT 48/48.
+This matches local qualification. Artifact: `runs/live-decider01-accuracy-20261014.json`.
+
+A cold-classifier-cache burst sent **100 simultaneous chat requests, 50 per node**, through the
+game server's existing AI pool with normal classification and configured local/OpenAI overflow.
+All 100 produced guard-passed generated replies (one guard retry), all routed to general chat,
+with zero HTTP failures, canned fallbacks or wiki-source replies. Median **9.122 s**, p95
+**26.274 s**, max **30.826 s**, **20/100 under 5 s**: the median-under-five-seconds goal is unmet.
+
+| Node | Requests | Response median | Response p95 | Classification median | Generation median |
+|---|---:|---:|---:|---:|---:|
+| 47.51.162.106 | 50 | 7.628 s | 12.112 s | 5.120 s | 1.597 s |
+| 192.168.1.188 | 50 | 12.911 s | 29.238 s | 6.034 s | 10.149 s |
+
+Phase medians do not add. Fifteen requests used wiki-based routing near the classifier deadline
+(five on A, ten on B), although their replies were generated successfully. Both nodes reached
+eight local and four cloud generations in flight without observed cloud cooldown. Both recovered
+healthy and idle with zero native inference failures. This workload repeats ten chat prompts;
+each node shared 36 pending classifier requests, so it is not 100 distinct-message throughput.
+The older single-node 100-request result is not a matched comparison. No production settings
+were changed during this test. Burst artifact:
+`C:/Scripts/Lidollquest-server/artifacts/decider01-pooled-chat-20261014.json`.
+
 ## Hosting release: decider0-1 Q4_K_M (2026-10-14)
 
 The selected v3 model has now been converted and tested through the native CPU Decider runtime
