@@ -2,6 +2,24 @@
 
 ## Optional local Decider 2B Q4_K_M classifier (2026-10-14)
 
+Live node B check (October 14, 11:35-11:38 Pacific): `192.168.1.188:9092` reports Decider 2B
+Q4_K_M active, four CPU threads, zero GPU layers and one inference slot. The deployed hybrid
+96-message suite scored 81/96: GAME 33/48, CHAT 48/48, failing the per-class gate. All 57 completed
+model decisions were CHAT; all 33 GAME decisions came from wiki overrides (six social shortcuts).
+This does not qualify the model's decision behavior despite its healthy native runtime.
+
+A diagnostic 100%-chat burst sent 100 simultaneous requests to **this node alone**: 100 real
+guard-passed replies, median 23.843 s, p95 53.102 s, max 55.063 s, eight under five seconds.
+Methods were 10 social, 50 model, 40 wiki fallbacks at approximately the classifier deadline.
+Classification median was 7.573 s; generation median was 17.332 s (phase medians do not add).
+The ten repeated prompts shared 81 pending requests, with nine fresh model misses and zero cache
+hits. This is not diverse-message throughput or a matched comparison with earlier two-node bursts.
+Both local and cloud generation saturated (8/4 observed), without cloud cooldown; the node recovered
+healthy/idle with zero native inference failures. No production settings changed during the tests.
+Artifacts under `C:/Scripts/Lidollquest-server/artifacts/`: `decider-node-b-accuracy-20261014T183516Z.json`
+and `burst-20261014183708027.json`. The burst is diagnostic despite the failed accuracy gate;
+neither correct chat fallback nor successful HTTP responses qualify gameplay routing for release.
+
 `CLASSIFIER_BACKEND=decider` loads `Mapika/decider-2b-GGUF` / `decider-2b-v11-Q4_K_M.gguf`
 inside the existing RAG process. No extra port or Sakura classifier is needed for this backend.
 Reply models, wiki retrieval, companions, social shortcuts, label caching and overflow retain
@@ -20,13 +38,44 @@ is needed for this model architecture; a source build on Windows needs Visual St
 and CMake. A working Sakura executable does not install these Python dependencies. Native installation
 and live model accuracy/latency must be checked on each host; the unit suite uses a model double.
 
-On Windows, the helper temporarily sets TEMP/TMP/TMPDIR to the checkout's `.t` directory and
-restores their previous values afterward. This avoids the reported 260-character extraction path
-ending in `ChatAttachmentsListItemMcpResource.svelte`. It does not change the registry or remove
-existing temp files. If the checkout path is long, pass `-BuildTemp C:\t` (or another short writable
-directory). This addresses source extraction; subsequent compilation still needs the toolchain above.
-Keep `llama-cpp-python>=0.3.35,<0.4` as required by Decider; an older prebuilt wheel is not a substitute.
-The helper's PowerShell syntax is checked locally; installation on the affected server still needs a retry.
+On Windows, the helper temporarily sets TEMP/TMP/TMPDIR to a short drive-root directory (`C:\t`
+for a checkout on C:) and restores their previous values afterward. The earlier checkout-local `.t`
+workaround was insufficient: llama-cpp-python 0.3.36 contains an even deeper 178-character archive
+member, giving a 254-character pip extraction filename with `C:\t`. The release archive was checked
+against PyPI's SHA-256 and all member lengths inspected; native installation still needs a server retry.
+The requirements now pin that native package to 0.3.36, within Decider's supported >=0.3.35,<0.4 range.
+The helper rejects temp roots longer than eight characters. It does not change the registry or remove
+existing temp files. To retry with either the old or new helper immediately:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ps/Install-Decider.ps1 -BuildTemp C:\t
+```
+
+The selected directory must be writable. This addresses source extraction; subsequent compilation
+still needs the toolchain above. An older incompatible prebuilt wheel is not a substitute.
+
+If CMake reports `nmake` missing and `CMAKE_C_COMPILER` / `CMAKE_CXX_COMPILER` unset, extraction
+has succeeded but MSVC is missing or its developer environment is not active. Install **Visual Studio
+2022 Build Tools**, selecting **Desktop development with C++**, including the MSVC x64/x86 tools
+and a Windows SDK. On Windows LTSC without winget, download and run Microsoft's
+[standalone Build Tools 2022 installer](https://aka.ms/vs/17/release/vs_BuildTools.exe).
+Select **Desktop development with C++** and keep its recommended components, then click Install.
+If Build Tools is already installed without C++, open Visual Studio Installer and choose Modify
+to add that workload. The full Visual Studio IDE is not required.
+
+The optional winget equivalent, on machines where winget is available, is:
+
+```powershell
+winget install --exact --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+After installation, open **Developer PowerShell for VS 2022**, change to the npc-rag checkout, and
+run `powershell -ExecutionPolicy Bypass -File ps/Install-Decider.ps1 -BuildTemp C:\t` again.
+The updated helper also discovers an installed x64 C++ toolchain using `vswhere` and loads its
+developer shell automatically. When native compilation is needed, it checks for `cl.exe` and
+`nmake.exe` before pip downloads packages. CMake is already supplied by the isolated wheel build;
+installing CMake alone does not supply a C++ compiler. This helper targets Windows x64 builds.
+See Microsoft's [developer shell instructions](https://learn.microsoft.com/en-us/visualstudio/ide/reference/command-prompt-powershell?view=vs-2022).
 
 The built-in model defaults are:
 
