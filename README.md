@@ -1,5 +1,30 @@
 # npc-rag: the LiDollQuest tutorial NPC
 
+## Classification latency fix (2026-10-14)
+
+Wiki retrieval and the classifier run concurrently. Strong wiki evidence at or above
+`RAG_GAME_EVIDENCE` now returns GAME immediately, retaining the retrieved notes and cancelling
+pending classifier work. Weak evidence still waits for the model; a later strong match still
+overrides CHAT. `scores.llm` is null when the model did not finish before the wiki decided.
+
+`CLASSIFIER_TIMEOUT` now bounds the classifier's slot queue plus HTTP request together. Previously,
+queued calls could wait through several timeout windows before their own HTTP timeout began.
+The default remains 10 seconds. This does not bound retrieval, generation, or complete request
+latency. Cancellation releases the RAG client's slot; backend compute reclamation depends on
+the model server handling the disconnected request.
+
+Update this checkout on each RAG host and restart its existing 9092 process using
+`powershell -ExecutionPolicy Bypass -File ps/Start-NpcRag.ps1`. No environment change is required.
+The 99-test suite includes 100 concurrent classification calls against a stalled mock backend,
+slot recovery after cancellation, early wiki decisions, and caller/error cleanup. These are
+regression tests, not a live latency measurement. Repeat the live 100-message burst after deployment.
+
+For a CPU/GPU comparison, run the same classifier model and quantization on the same host, first
+on CPU and then on the selected GPU in Sakura, keeping its existing port (currently 9094 on the
+live fleet), slot count, context, RAG settings and test prompts fixed. Warm each setup equally
+and compare full request median/p95, classification timings and guard outcomes. Sharing a GPU
+with a reply model may change generation latency too. No GPU configuration is changed by this fix.
+
 ## Optional GPT-6 Luna overflow on 9092 (2026-10-14)
 
 Each existing RAG process can detect its own local generation capacity. It retrieves the wiki,
@@ -134,7 +159,7 @@ Response:
 ```
 
 - `reply` is one plain-ASCII paragraph of at most 600 characters (`MAX_REPLY_CHARS`), with no Markdown, so it can go straight into the dialogue box.
-- `method` is `llm` when the classifier model decided, `wiki` when it was down and the wiki score decided, or `caller` when the request's `category` decided.
+- `method` is `llm` when the classifier model decided, `wiki` when strong evidence decided early or the model was unavailable, or `caller` when the request's `category` decided.
 - `guard` says what happened to the reply (see [The guard](#the-guard)).
 - `fallback: true` means the main model was down or too slow. Pip then says a canned line, pointing at the best wiki section when there is one. Players always get an answer.
 - `sources` link the wiki sections the reply was written from. They are empty for small talk and whenever the guard replaced the reply.
@@ -215,7 +240,7 @@ Tests: `tests/test_companion.py`.
 
 ## How each step works
 
-**Classifier** (`npc_rag/classifier.py`). The model on `CLASSIFIER_URL` gets a short instruction and answers GAME or CHAT (4 tokens, temperature 0). From the development PC, Llama-3.2-3B on MONOLITH-III classified 96.2% of the 80 held-out messages in `data/eval_messages.json` correctly, taking about 0.6 s each. If the model is down, times out (`CLASSIFIER_TIMEOUT`) or answers something else, a best wiki score of `RAG_GAME_EVIDENCE` (0.66) or more makes the message a game question, and anything lower counts as chat. Measure accuracy with `python -m npc_rag eval`, or `eval --wiki-only` for the fallback alone.
+**Classifier** (`npc_rag/classifier.py`). The model on `CLASSIFIER_URL` gets a short instruction and answers GAME or CHAT (4 tokens, temperature 0). From the development PC, Llama-3.2-3B on MONOLITH-III classified 96.2% of the 80 held-out messages in `data/eval_messages.json` correctly, taking about 0.6 s each. Wiki retrieval runs alongside it: a best score of `RAG_GAME_EVIDENCE` (0.66) or more immediately makes the message a game question. Otherwise the model decides; if unavailable or invalid, weak wiki evidence counts as chat. In the service, `CLASSIFIER_TIMEOUT` bounds model queueing plus HTTP time, not retrieval or the whole conversation. Measure accuracy with `python -m npc_rag eval`, or `eval --wiki-only` for the fallback alone.
 
 **Retrieval** (`npc_rag/wiki.py`, `npc_rag/index.py`). Chapters come from `pages.json` and `content/<slug>.md` (the public list, so maintainer-only pages are never indexed). They are cut at every heading. Tables become one sentence per row, and long sections split at about 180 words with one block of overlap. That gives 73 chunks for the current wiki. Each search blends BM25 keywords (exact words like "Cursebreaker" or "RPP") and embeddings (meaning) with reciprocal rank fusion. Heading ids replicate `wiki.js`, and a test runs the real regex in node, so every link opens the right section.
 

@@ -298,12 +298,11 @@ def test_game_question_gets_wiki_notes(settings, embedder, index, llama, clf):
     llama.replies = ["**Pip:** Visit the Cursebreaker! *waves*"]
     with make_client(settings, embedder, index, llama, clf) as c:
         body = c.post("/v1/npc/chat", json={"message": "how do I remove a cursed item", "player_name": "Doll"}).json()
-    assert body["category"] == "game" and body["method"] == "llm" and body["guard"] == "passed"
+    assert body["category"] == "game" and body["method"] in ("llm", "wiki") and body["guard"] == "passed"
     assert body["reply"] == "Visit the Cursebreaker!"  # Markdown, name prefix and stage direction removed.
     system = llama.requests[0]["messages"][0]["content"]
     assert "Guidebook notes" in system and "Cursebreaker" in system and "Doll" in system
     assert llama.requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
-    assert clf.requests[0]["max_tokens"] == 4 and clf.requests[0]["temperature"] == 0.0
     assert body["sources"] and body["sources"][0]["url"].startswith("https://wiki.test/wiki/#/needs/")
 
 
@@ -347,6 +346,7 @@ def test_general_chat_has_no_notes(settings, embedder, index, llama, clf):
     with make_client(settings, embedder, index, llama, clf) as c:
         body = c.post("/v1/npc/chat", json={"message": "hello there friend"}).json()
     assert body["category"] == "general" and body["sources"] == []
+    assert clf.requests[0]["max_tokens"] == 4 and clf.requests[0]["temperature"] == 0.0  # Weak wiki evidence needs the model.
     assert "Guidebook notes" not in llama.requests[0]["messages"][0]["content"]
 
 
@@ -395,6 +395,43 @@ def test_classifier_down_uses_wiki_score(settings, embedder, index, llama, clf):
     with make_client(settings, embedder, index, llama, clf) as c:
         game = c.post("/v1/npc/chat", json={"message": "cursebreaker cursed item"}).json()
     assert (game["category"], game["method"]) == ("game", "wiki")
+
+
+def test_classifier_burst_deadline_includes_slot_queue(settings, embedder, index, llama):
+    import asyncio
+
+    async def run():
+        started, cancelled = [], []
+        blocked = True
+
+        async def handler(request):
+            started.append(request)
+            if blocked:
+                try:
+                    await asyncio.Event().wait()  # The mock deliberately ignores the HTTP timeout.
+                finally:
+                    cancelled.append(request)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "CHAT"}}]})
+
+        short = dataclasses.replace(settings, classifier_timeout=0.05, rag_game_evidence=1.1)
+        classifier = LlamaClient(short.classifier_url, concurrency=1, transport=httpx.MockTransport(handler))
+        app = service.create_app(short, embedder=embedder, index=index,
+                                 llm=LlamaClient(short.llm_url, transport=httpx.MockTransport(llama.handler)),
+                                 classifier_llm=classifier)
+        async with app.router.lifespan_context(app):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                responses = await asyncio.wait_for(asyncio.gather(*(
+                    client.post("/v1/classify", json={"message": "hello there friend"}) for _ in range(100)
+                )), timeout=2)  # A single deadline per caller, rather than 100 serial timeout windows.
+                assert all(r.status_code == 200 and r.json()["method"] == "wiki" for r in responses)
+                assert all(r.json()["scores"]["llm"] is None for r in responses)
+                assert started and len(cancelled) == len(started)  # No abandoned in-flight HTTP operations.
+                blocked = False
+                recovered = await asyncio.wait_for(
+                    client.post("/v1/classify", json={"message": "hello again"}), timeout=1)
+                assert recovered.json()["method"] == "llm"  # The semaphore remains usable after cancellation.
+
+    asyncio.run(run())
 
 
 def test_memory_follows_the_player(settings, embedder, index, llama, clf):

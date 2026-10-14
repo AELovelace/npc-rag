@@ -67,3 +67,102 @@ def test_parse_verdict():
     assert parse_verdict(" chat.") == GENERAL
     assert parse_verdict("**Game**") == GAME
     assert parse_verdict("maybe") is None and parse_verdict("") is None
+
+
+def test_strong_wiki_returns_without_waiting_for_model_and_cleans_up():
+    async def run():
+        started, cancelled = asyncio.Event(), asyncio.Event()
+        cache = {}
+
+        async def ask(_):
+            started.set()
+            try:
+                await asyncio.Event().wait()  # A saturated model never responds during this test.
+            finally:
+                cancelled.set()
+
+        async def evidence(_):
+            await started.wait()
+            cache["notes"] = "Cursebreaker"  # Retrieval must finish before the caller receives its verdict.
+            return 0.9
+
+        verdict = await asyncio.wait_for(classify("cursed item", ask_llm=ask, evidence=evidence,
+                                                 wiki_evidence=0.5), timeout=1)
+        assert (verdict.category, verdict.method) == (GAME, "wiki")
+        assert verdict.scores == {"llm": None, "wiki_best": 0.9}
+        assert cache["notes"] == "Cursebreaker" and cancelled.is_set()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("wiki_best, expected", [(0.1, GENERAL), (0.9, GAME)])
+def test_fast_model_still_waits_for_wiki_override(wiki_best, expected):
+    async def run():
+        model_done = asyncio.Event()
+
+        async def ask(_):
+            model_done.set()
+            return GENERAL
+
+        async def evidence(_):
+            await model_done.wait()
+            await asyncio.sleep(0)  # Deliver the wiki evidence after the model's CHAT answer.
+            return wiki_best
+
+        verdict = await classify("message", ask_llm=ask, evidence=evidence, wiki_evidence=0.5)
+        assert verdict.category == expected
+
+    asyncio.run(run())
+
+
+def test_weak_wiki_waits_for_model():
+    async def run():
+        wiki_done = asyncio.Event()
+
+        async def evidence(_):
+            wiki_done.set()
+            return 0.1
+
+        async def ask(_):
+            await wiki_done.wait()
+            await asyncio.sleep(0)
+            return GAME
+
+        verdict = await classify("message", ask_llm=ask, evidence=evidence, wiki_evidence=0.5)
+        assert (verdict.category, verdict.method) == (GAME, "llm")
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("cancel_caller", [False, True])
+def test_classifier_cleans_up_on_search_error_or_caller_cancellation(cancel_caller):
+    async def run():
+        model_started, wiki_started = asyncio.Event(), asyncio.Event()
+        model_stopped, wiki_stopped = asyncio.Event(), asyncio.Event()
+
+        async def ask(_):
+            model_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                model_stopped.set()
+
+        async def evidence(_):
+            wiki_started.set()
+            try:
+                await model_started.wait()
+                if not cancel_caller:
+                    raise RuntimeError("search failed")
+                await asyncio.Event().wait()
+            finally:
+                wiki_stopped.set()
+
+        task = asyncio.create_task(classify("message", ask_llm=ask, evidence=evidence, wiki_evidence=0.5))
+        await asyncio.wait_for(wiki_started.wait(), timeout=1)
+        if cancel_caller:
+            task.cancel()
+        with pytest.raises(asyncio.CancelledError if cancel_caller else RuntimeError):
+            await asyncio.wait_for(task, timeout=1)
+        assert model_stopped.is_set() and wiki_stopped.is_set()
+
+    asyncio.run(run())

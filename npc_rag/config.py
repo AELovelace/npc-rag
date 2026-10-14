@@ -75,8 +75,8 @@ class Settings:
 
     # ── Classifier ────────────────────────────────────────────────────────
     classifier_model: str        # Model name sent to the classifier server.
-    classifier_timeout: float    # Seconds before giving up on the classifier and using the wiki score.
-    rag_game_evidence: float     # Wiki score that makes a message a game question when the classifier is down.
+    classifier_timeout: float    # Total classifier-model wait (slot queue + HTTP), then use the wiki score.
+    rag_game_evidence: float     # Wiki score that immediately makes a message a game question.
 
     # ── Reply generation ──────────────────────────────────────────────────
     npc_name: str                # Default NPC name when the caller does not send one.

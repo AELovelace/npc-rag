@@ -1,7 +1,7 @@
 """npc-rag service (port 9092): wiki retrieval plus guarded NPC replies.
 
 POST /v1/npc/chat is the front door: player message in, NPC reply out.
-  1. classify  - Sakura's small model (9091) says game or chat; the wiki score decides if it's down
+  1. classify  - strong wiki evidence decides immediately; otherwise the small model says game or chat
   2. retrieve  - game questions get the best-matching wiki sections from the local index
   3. generate  - Sakura's main model (9090) writes the reply from the persona + those sections
   4. guard     - replies that invent names or recite the rules are retried, then replaced (guard.py)
@@ -120,10 +120,14 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
 
     async def ask_classifier(message: str) -> str | None:
         try:
-            text = await state["classifier"].chat(
+            text = await asyncio.wait_for(state["classifier"].chat(
                 [{"role": "system", "content": CLASSIFY_PROMPT}, {"role": "user", "content": message}],
-                max_tokens=4, temperature=0.0, timeout=settings.classifier_timeout)
+                max_tokens=4, temperature=0.0, timeout=settings.classifier_timeout),
+                timeout=settings.classifier_timeout)  # Bound the slot queue and HTTP request together.
             return parse_verdict(text)
+        except asyncio.TimeoutError:
+            log.warning("Classifier deadline exceeded (queue + request), using the wiki score")
+            return None
         except LLMError as exc:
             log.warning("Classifier unavailable, using the wiki score: %s", exc)
             return None

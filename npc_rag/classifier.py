@@ -1,6 +1,6 @@
 """Decide whether a player message is a game question (use the wiki) or general conversation.
 
-The small classifier model Sakura runs on port 9091 and a wiki search run side by side:
+The small classifier model and a wiki search run side by side:
   wiki  - a best wiki score of RAG_GAME_EVIDENCE or more makes it a game question, whatever the
           model said (the 3B calls needs/accident questions small talk about 1 time in 10)
   llm   - otherwise the model's GAME or CHAT answer decides
@@ -45,10 +45,21 @@ def parse_verdict(text: str) -> str | None:
 async def classify(message: str, *, ask_llm: Callable[[str], Awaitable[str | None]],
                    evidence: Callable[[str], Awaitable[float | None]], wiki_evidence: float) -> Verdict:
     """ask_llm returns "game"/"general" or None; evidence returns the best wiki score or None."""
-    answer, best = await asyncio.gather(ask_llm(message), evidence(message))
-    scores = {"llm": answer, "wiki_best": best}
-    if best is not None and best >= wiki_evidence:
-        return Verdict(GAME, "wiki" if answer != GAME else "llm", scores)  # The wiki clearly covers it.
-    if answer in (GAME, GENERAL):
-        return Verdict(answer, "llm", scores)
-    return Verdict(GENERAL, "wiki", scores)  # Model down and the wiki barely matches: small talk.
+    model_task = asyncio.create_task(ask_llm(message))  # Start both signals together to avoid serial latency.
+    wiki_task = asyncio.create_task(evidence(message))
+    try:
+        best = await wiki_task  # Finish retrieval so the caller can reuse its cached notes.
+        if best is not None and best >= wiki_evidence:
+            answer = model_task.result() if model_task.done() else None
+            return Verdict(GAME, "wiki" if answer != GAME else "llm",
+                           {"llm": answer, "wiki_best": best})  # Strong evidence needs no further model wait.
+        answer = await model_task  # Weak evidence still needs the model's GAME/CHAT decision.
+        scores = {"llm": answer, "wiki_best": best}
+        if answer in (GAME, GENERAL):
+            return Verdict(answer, "llm", scores)
+        return Verdict(GENERAL, "wiki", scores)  # Model down and the wiki barely matches: small talk.
+    finally:
+        for task in (model_task, wiki_task):
+            if not task.done():
+                task.cancel()  # Release queued/in-flight classifier work, including on caller cancellation.
+        await asyncio.gather(model_task, wiki_task, return_exceptions=True)  # Consume results; leave no orphan tasks.
