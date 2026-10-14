@@ -2,6 +2,22 @@
 
 ## Optional local Decider 2B Q4_K_M classifier (2026-10-14)
 
+Diagnostic follow-up (October 14): the host's 35 development probes passed all five controls,
+all five reversed controls and the repeated control (identical probabilities). The v1 prompt
+scored 5/6 gameplay/social cases, missing a greeting followed by a keyboard-shortcut question;
+reversing the options did not fix it. A short question with descriptive options scored 6/6 with
+JSON state, reducing the six-case median from 1,387 ms to 813.5 ms (41%). Plain text also scored
+6/6 at 750 ms. These small sequential probes suggest prompt sensitivity, not a universally stuck
+CHAT readout; strong wiki matches hid other model decisions in the earlier hybrid test below.
+They do not qualify accuracy or establish conversation latency under load.
+
+The prepared `game-chat-v2` policy uses the exact tested short question/descriptive options and
+retains JSON message encoding. It maps those descriptions back to the existing `game`/`general`
+API categories. No dependency rebuild is needed for this prompt change. Update the server checkout,
+run the unchanged 96-message raw and hybrid evaluations below, then restart 9092 and confirm
+`/health.classification.decision_policy=game-chat-v2`. The full gate and live deployment remain
+unverified for v2; require 90% in each class before another burst.
+
 Live node B check (October 14, 11:35-11:38 Pacific): `192.168.1.188:9092` reports Decider 2B
 Q4_K_M active, four CPU threads, zero GPU layers and one inference slot. The deployed hybrid
 96-message suite scored 81/96: GAME 33/48, CHAT 48/48, failing the per-class gate. All 57 completed
@@ -19,6 +35,24 @@ healthy/idle with zero native inference failures. No production settings changed
 Artifacts under `C:/Scripts/Lidollquest-server/artifacts/`: `decider-node-b-accuracy-20261014T183516Z.json`
 and `burst-20261014183708027.json`. The burst is diagnostic despite the failed accuracy gate;
 neither correct chat fallback nor successful HTTP responses qualify gameplay routing for release.
+
+To investigate the all-CHAT result on the affected host, run:
+
+```powershell
+.venv\Scripts\python.exe python/diagnose_decider.py
+```
+
+This uses the same configured GGUF loader in a separate process, without modifying the running
+service or its cache. It temporarily loads another model copy; avoid overlapping it with load tests.
+It records runtime versions, calibration, native/Hugging Face option-letter mappings, a synthetic
+prompt and answer slots, and raw probabilities for 35 development probes. These compare basic
+non-game controls, reversed choices, the frozen v1 question (`legacy_v1` groups), shorter described options, plain text
+versus JSON state, and a repeated control. No held-out evaluation examples are used. Output goes to
+`artifacts/decider-diagnostic.json`; the console prints individual probes and group summaries.
+Correct controls with failed production routing suggest a task/prompt issue; consistently wrong or
+position-dependent controls point toward a wider runtime/readout/model issue. These are diagnostic
+signals, not conclusive root causes. The existing HTTP classification endpoint hides probabilities
+and may cancel native waits when wiki evidence wins, so it cannot perform this comparison alone.
 
 `CLASSIFIER_BACKEND=decider` loads `Mapika/decider-2b-GGUF` / `decider-2b-v11-Q4_K_M.gguf`
 inside the existing RAG process. No extra port or Sakura classifier is needed for this backend.
@@ -109,7 +143,7 @@ require the existing 90%-per-class gate before a live burst. Model load time is 
 Evaluation loads its own model instance, so avoid running it alongside production Decider on a busy host.
 
 After validation, add the settings above to each RAG host's `.env` and restart the existing 9092 service.
-`/health.classification.backend` should be `decider`, with `decision_policy=game-chat-v1`, model/file,
+`/health.classification.backend` should be `decider`, with `decision_policy=game-chat-v2`, model/file,
 CPU threads, configured GPU layers, context, capacity, busy state and failure count. `classifier_url`
 is null because no HTTP classifier is used. Existing `method=llm` and `scores.llm` retain their meanings
 as a model-based category, including Decider, for client compatibility. Revert to
@@ -128,7 +162,8 @@ fallback and never enter the label cache. Restart RAG after replacing local mode
 The adapter uses the model's calibrated option scores, without chat templates, generated labels or
 the llama.cpp grammar. Schema validity is not proof of correct routing; no Decider accuracy or
 five-second conversation claim is established by the local contract tests.
-Validation: 143 local tests pass, including native cancellation/recovery and both evaluation modes.
+Validation: 144 local tests pass, including descriptive-option mapping, rejection of stale terse labels,
+native cancellation/recovery and both evaluation modes. These use a model double, not native weights.
 The dependency-resolution dry run stalled at package metadata and was stopped; no native packages
 or model weights were installed by this preparation. Run the install/import check on each RAG host.
 Upstream: [model files and scoring instructions](https://huggingface.co/Mapika/decider-2b-GGUF),

@@ -10,16 +10,19 @@ import pytest
 from fastapi.testclient import TestClient
 
 from npc_rag.classifier import GAME, GENERAL, ModelDecisionCache
-from npc_rag.classifier_backend import DeciderClassifier, make_classifier
+from npc_rag.classifier_backend import DECIDER_OPTIONS, DECIDER_POLICY, DECIDER_QUESTION, DeciderClassifier, make_classifier
 from npc_rag.llm import LLMError, LlamaClient
 from npc_rag.service import create_app
+
+
+GAME_OPTION, CHAT_OPTION = DECIDER_OPTIONS
 
 
 class FakeDecider:
     def __init__(self, source, **kwargs):
         self.source, self.kwargs, self.calls = source, kwargs, []
         self.m = SimpleNamespace(tok=SimpleNamespace(encode=lambda text, **kw: list(text)))
-        self.result = [{"choice": "CHAT", "probs": {"GAME": 0.1, "CHAT": 0.9}}]
+        self.result = [{"choice": CHAT_OPTION, "probs": {GAME_OPTION: 0.1, CHAT_OPTION: 0.9}}]
 
     def decide(self, state, questions, **kwargs):
         self.calls.append((state, questions, kwargs))
@@ -41,11 +44,12 @@ def test_decider_loads_correct_quantization_and_maps_typed_output(settings):
             assert await backend.decide(text) == GENERAL
             state, questions, options = backend._model.calls[0]
             assert json.loads(state) == {"message": text}
-            assert questions[0]["options"] == ["GAME", "CHAT"]
+            assert questions == [{"question": DECIDER_QUESTION, "options": list(DECIDER_OPTIONS)}]
             assert options["max_ctx_tokens"] == 3072
-            backend._model.result = [{"choice": "GAME", "probs": {"GAME": 0.9, "CHAT": 0.1}}]
+            backend._model.result = [{"choice": GAME_OPTION, "probs": {GAME_OPTION: 0.9, CHAT_OPTION: 0.1}}]
             assert await backend.decide("How do I equip a shield?") == GAME
             assert (await backend.model_identity())[0] == "decider"
+            assert (await backend.model_identity())[-1] == DECIDER_POLICY == "game-chat-v2"
         finally:
             await backend.aclose()
         await backend.aclose()  # Lifespan cleanup can safely be repeated.
@@ -55,10 +59,11 @@ def test_decider_loads_correct_quantization_and_maps_typed_output(settings):
 
 
 @pytest.mark.parametrize("result", [[], "CHAT", [{}],
-    [{"choice": "CHAT because", "probs": {"GAME": .1, "CHAT": .9}}],
-    [{"choice": "CHAT", "probs": {"GAME": float("nan"), "CHAT": .9}}],
-    [{"choice": "CHAT", "probs": {"GAME": .1, "CHAT": .1}}],
-    [{"choice": "GAME", "probs": {"GAME": .1, "CHAT": .9}}]])
+    [{"choice": "CHAT", "probs": {"GAME": .1, "CHAT": .9}}],  # Reject stale terse-label readouts.
+    [{"choice": "CHAT because", "probs": {GAME_OPTION: .1, CHAT_OPTION: .9}}],
+    [{"choice": CHAT_OPTION, "probs": {GAME_OPTION: float("nan"), CHAT_OPTION: .9}}],
+    [{"choice": CHAT_OPTION, "probs": {GAME_OPTION: .1, CHAT_OPTION: .1}}],
+    [{"choice": GAME_OPTION, "probs": {GAME_OPTION: .1, CHAT_OPTION: .9}}]])
 def test_invalid_decisions_are_errors_and_not_cached(settings, result):
     async def run():
         backend = DeciderClassifier(settings, factory=FakeDecider)
