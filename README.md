@@ -1,5 +1,60 @@
 # npc-rag: the LiDollQuest tutorial NPC
 
+## Optional GPT-6 Luna overflow on 9092 (2026-10-14)
+
+Each existing RAG process can detect its own local generation capacity. It retrieves the wiki,
+selects allowed lore/memories and assembles the character prompt first, then uses a free local
+slot or sends that prepared prompt to GPT-6 Luna. The existing reply guards run afterward.
+No second service, additional listening port, game-server setting or firewall opening is needed.
+
+Add these settings to the existing .env on each RAG server that should use overflow:
+
+    OPENAI_API_KEY=<your private API key>
+    OPENAI_MODEL=gpt-6-luna
+    OPENAI_LOCAL_CAPACITY=4
+    OPENAI_CONCURRENCY=4
+    OPENAI_TIMEOUT=12
+
+Keep the existing NPC_API_KEY, LLM_URL, LLM_CONCURRENCY and NPC_PORT=9092 settings. Restart
+normally with powershell -ExecutionPolicy Bypass -File ps/Start-NpcRag.ps1. A blank or absent
+OPENAI_API_KEY disables overflow. A shared NPC_API_KEY is required before paid routing can start.
+The OpenAI key belongs only in the RAG environment, never in the game server or client.
+
+OPENAI_LOCAL_CAPACITY is the total number of simultaneous local generations through this RAG
+process before it uses overflow. It is capped at LLM_CONCURRENCY times the number of model
+copies listed in LLM_URL. Background impressions and summaries count toward local occupancy,
+but never use OpenAI themselves; classifier and GM-assistant calls also stay local.
+OPENAI_CONCURRENCY limits simultaneous cloud generations per RAG process (not across the fleet).
+Capacity settings accept integers 1-64; OPENAI_TIMEOUT accepts positive seconds up to 120.
+Requests return to local generation immediately when local slots become available. A fast local
+backend failure can also use cloud. These are process slot counts, not GPU utilization or slots
+occupied by other applications; adjust the threshold if the model servers are shared.
+
+When cloud capacity is full or cooling down, requests wait locally within LLM_TIMEOUT. A failed
+cloud call returns through the existing game failure path and starts a 30-second cloud cooldown.
+Queueing, generation and local failover share the caller deadline; cloud calls additionally use
+OPENAI_TIMEOUT. There is no promise that all replies finish within five seconds.
+Health checks include both backends: /health reports llm=true if either is reachable and exposes
+an overflow object with enabled, local/cloud capacity, in-flight counts and cooldown seconds.
+Checking OpenAI model access uses GET /v1/models/gpt-6-luna, without generating a paid reply.
+
+The adapter uses the Responses API, reasoning.effort=none, bounded output and store=false.
+Prepared dialogue prompts, relevant lore, history and selected memories go to OpenAI.
+store=false disables stored Responses; it does not promise zero provider retention.
+There are no automatic HTTP retries; the existing content guard may make its corrective retry.
+Refusals remain refusals. Concurrency limits are not a monetary spending cap.
+
+The earlier separate .env.overflow/9095 setup is superseded. Use your existing .env instead.
+Any old private .env.overflow file is left untouched and Git-ignored so a pasted key is preserved;
+it is not read during normal startup. NPC_RAG_OVERFLOW_URL is no longer needed on the game server.
+
+Verification: .venv\Scripts\python -m pytest -q covers capacity routing/recovery, cloud limits,
+background-local routing, queue deadlines/cancellation, cooldown, payload/authentication/redaction,
+refusals, guarded retries, and retrieval/companion context with mocked providers. Live API timing
+still needs a configured key and a controlled conversation test.
+API references: [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna) and
+[Responses](https://developers.openai.com/api/reference/python/resources/responses/methods/create).
+
 Wiki retrieval and code-level reply guards for the tutorial NPC (default name **Pip**). The models themselves run in Sakura (DoLLAMACPP-Frontend) on the AI server. npc-rag decides what they see and checks what they say.
 
 A player's message goes through four steps:

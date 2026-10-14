@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .env
+.env.overflow
 # Downloaded embedding model and the built index are recreated by Install-NpcRag.ps1.
 data/models/
 data/index/

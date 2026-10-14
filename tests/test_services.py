@@ -13,6 +13,223 @@ from npc_rag.prompts import LEAK_REPLY, tidy_reply
 GAME_WORDS = ("toilet", "cursed", "levels", "dragon", "gods")
 
 
+def openai_response(text="Hello, traveller!", **extra):
+    return {"status": "completed", "output": [{"type": "reasoning", "summary": []},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}], **extra}
+
+
+def test_openai_payload_health_and_secret_isolation():
+    import asyncio
+    from npc_rag.llm import OpenAIClient
+    seen = []
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={"id": "gpt-6-luna"} if request.method == "GET" else openai_response())
+    async def run():
+        client = OpenAIClient("test-private-key", transport=httpx.MockTransport(handler))
+        messages = [{"role": "system", "content": "Use only these wiki notes."}, {"role": "user", "content": "hello"}]
+        assert await client.chat(messages, max_tokens=100, temperature=0.6, timeout=1) == "Hello, traveller!"
+        body = json.loads(seen[0].content)
+        assert body == {"model": "gpt-6-luna", "input": messages, "max_output_tokens": 100,
+                        "reasoning": {"effort": "none"}, "store": False, "stream": False}
+        assert seen[0].url == "https://api.openai.com/v1/responses"
+        assert seen[0].headers["authorization"] == "Bearer test-private-key"
+        assert await client.health()
+        assert seen[1].url.path == "/v1/models/gpt-6-luna"
+        await client.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("status,payload", [(401, {"error": "test-private-key"}), (429, {}), (500, {}),
+    (302, {}), (200, {"output": []}), (200, openai_response(status="incomplete")),
+    (200, openai_response(text="")), (200, {"status": "completed", "output": [None]})])
+def test_openai_failures_are_sanitized_and_not_retried(status, payload):
+    import asyncio
+    from npc_rag.llm import OpenAIClient, LLMError
+    seen = []
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(status, json=payload)
+    async def run():
+        client = OpenAIClient("test-private-key", transport=httpx.MockTransport(handler))
+        with pytest.raises(LLMError) as error:
+            await client.chat([], max_tokens=100, temperature=0, timeout=1)
+        assert "test-private-key" not in str(error.value)
+        assert len(seen) == 1
+        await client.aclose()
+    asyncio.run(run())
+
+
+def test_openai_slots_timeout_cancellation_and_refusal():
+    import asyncio
+    from npc_rag.llm import OpenAIClient, LLMError
+    async def run():
+        entered, release = asyncio.Event(), asyncio.Event()
+        seen = []
+        async def handler(request):
+            seen.append(request); entered.set(); await release.wait()
+            return httpx.Response(200, json=openai_response())
+        client = OpenAIClient("test-key", concurrency=1, transport=httpx.MockTransport(handler))
+        kwargs = {"max_tokens": 100, "temperature": 0, "timeout": 2}
+        first = asyncio.create_task(client.chat([], **kwargs)); await entered.wait()
+        with pytest.raises(LLMError, match="timed out"):
+            await client.chat([], **{**kwargs, "timeout": 0.01})
+        assert len(seen) == 1, "the queue deadline includes waiting for a slot"
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        release.set()
+        assert await client.chat([], **kwargs) == "Hello, traveller!", "cancellation releases the slot"
+        await client.aclose()
+        refusal = {"status": "completed", "output": [{"type": "message", "role": "assistant",
+                    "content": [{"type": "refusal", "refusal": "No."}]}]}
+        client = OpenAIClient("test-key", transport=httpx.MockTransport(lambda r: httpx.Response(200, json=refusal)))
+        assert await client.chat([], **kwargs) == "I can't help with that request."
+        await client.aclose()
+    asyncio.run(run())
+
+
+def test_openai_factory_requires_both_keys_and_defaults_local(settings):
+    import asyncio
+    from npc_rag.llm import make_reply_llm, LlamaClient, OverflowClient
+    local = make_reply_llm(settings)
+    assert isinstance(local, LlamaClient); asyncio.run(local.aclose())
+    cloud_settings = dataclasses.replace(settings, openai_api_key="test-private-key")
+    assert "test-private-key" not in repr(cloud_settings)
+    with pytest.raises(ValueError, match="NPC_API_KEY"):
+        make_reply_llm(cloud_settings)
+    disabled = make_reply_llm(dataclasses.replace(cloud_settings, api_key="npc-key", openai_api_key=""))
+    assert isinstance(disabled, LlamaClient); asyncio.run(disabled.aclose())
+    cloud = make_reply_llm(dataclasses.replace(cloud_settings, api_key="npc-key"))
+    assert isinstance(cloud, OverflowClient)
+    assert cloud.view()["local_capacity"] == min(4, settings.llm_concurrency)
+    asyncio.run(cloud.aclose())
+
+
+def test_overflow_service_preserves_auth_guard_and_companion_context(settings, embedder, index, clf, monkeypatch):
+    from npc_rag.llm import OpenAIClient, OverflowClient
+    seen = []
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json={"id": "gpt-6-luna"})
+        body = json.loads(request.content); seen.append(body)
+        # First reply invents a name; the ordinary guard must still retry before any player sees it.
+        return httpx.Response(200, json=openai_response("Visit Mooncastle." if len(seen) == 1 else "Hello, traveller!"))
+    cloud_settings = dataclasses.replace(settings, api_key="npc-secret", openai_api_key="provider-secret")
+    monkeypatch.setattr(service, "make_reply_llm", lambda s: OverflowClient(
+        LlamaClient("http://local.test", transport=httpx.MockTransport(lambda r: httpx.Response(503))),
+        OpenAIClient(s.openai_api_key, transport=httpx.MockTransport(handler))))
+    app = service.create_app(cloud_settings, embedder=embedder, index=index,
+        classifier_llm=LlamaClient(settings.classifier_url, transport=httpx.MockTransport(clf.handler)))
+    with TestClient(app) as client:
+        assert client.post("/v1/npc/chat", json={"message": "hello"}).status_code == 401
+        headers = {"X-Api-Key": "npc-secret"}
+        result = client.post("/v1/npc/chat", headers=headers, json={"message": "hello", "category": "chat"}).json()
+        assert result["guard"] == "passed_after_retry"
+        assert "Mooncastle" not in result["reply"]
+        result = client.post("/v1/companion/chat", headers=headers, json={"message": "hello", "npc_id": "mira",
+            "npc_name": "Mira", "persona": "You are a gentle travelling friend.", "category": "chat",
+            "history": [{"role": "user", "content": "I like strawberry milk."}]}).json()
+        assert result["fallback"] is False and result["npc_name"] == "Mira"
+        assert "strawberry milk" in json.dumps(seen[-1]["input"])
+        assert "gentle travelling friend" in json.dumps(seen[-1]["input"])
+        result = client.post("/v1/npc/chat", headers=headers, json={"message": "how do I remove a cursed item", "category": "game"}).json()
+        assert result["relevant"] is True and result["sources"], "the existing wiki index still retrieves the answer context"
+        prompt = json.dumps(seen[-1]["input"])
+        assert "Cursebreaker" in prompt and "20 coins" in prompt, "OpenAI receives the actual retrieved wiki facts"
+        health = client.get("/health").json()
+        assert health["overflow"]["enabled"] is True and health["llm"] is True
+        assert "provider-secret" not in json.dumps(health)
+
+
+def test_separate_environment_file_does_not_load_local_dotenv(tmp_path, monkeypatch):
+    from npc_rag import config
+    (tmp_path / ".env").write_text("NPC_PORT=9092\nOPENAI_LOCAL_CAPACITY=4\n", encoding="utf-8")
+    (tmp_path / "alternate.env").write_text("NPC_PORT=9096\nOPENAI_LOCAL_CAPACITY=2\n", encoding="utf-8")
+    monkeypatch.setattr(config, "ROOT", tmp_path)
+    monkeypatch.delenv("NPC_PORT", raising=False); monkeypatch.delenv("OPENAI_LOCAL_CAPACITY", raising=False)
+    selected = config.load_settings("alternate.env")
+    assert selected.port == 9096 and selected.openai_local_capacity == 2
+
+
+def test_same_port_overflow_saturation_recovery_and_background_queue():
+    import asyncio
+    from npc_rag.llm import OpenAIClient, OverflowClient, LlamaPool
+    async def run():
+        entered, release, cloud_entered, cloud_release = [asyncio.Event() for _ in range(4)]
+        seen_local, seen_cloud = [], []
+        async def local_handler(request):
+            seen_local.append(json.loads(request.content)); entered.set(); await release.wait()
+            return httpx.Response(200, json={"choices": [{"message": {"content": "local answer"}}]})
+        async def cloud_handler(request):
+            seen_cloud.append(json.loads(request.content)); cloud_entered.set(); await cloud_release.wait()
+            return httpx.Response(200, json=openai_response("cloud answer"))
+        local = LlamaPool([LlamaClient("http://local-a", transport=httpx.MockTransport(local_handler)),
+                           LlamaClient("http://local-b", transport=httpx.MockTransport(local_handler))])
+        router = OverflowClient(local, OpenAIClient("key", transport=httpx.MockTransport(cloud_handler)),
+                                local_capacity=2, cloud_capacity=1)
+        prompt = [{"role": "system", "content": "Retrieved wiki notes and allowed memories."},
+                  {"role": "user", "content": "What do you remember?"}]
+        kwargs = {"max_tokens": 100, "temperature": 0, "timeout": 2}
+        first = asyncio.create_task(router.reply(prompt, **kwargs)); await entered.wait(); entered.clear()
+        second = asyncio.create_task(router.reply(prompt, **kwargs)); await entered.wait()
+        overflow = asyncio.create_task(router.reply(prompt, **kwargs)); await cloud_entered.wait()
+        background = asyncio.create_task(router.chat(prompt, **kwargs))
+        queued_reply = asyncio.create_task(router.reply(prompt, **kwargs)); await asyncio.sleep(0.01)
+        assert router.view()["local_in_flight"] == 2 and router.view()["cloud_in_flight"] == 1
+        assert len(seen_cloud) == 1, "cloud concurrency stays bounded; background work never overflows"
+        assert seen_cloud[0]["input"] == prompt, "RAG context is forwarded intact"
+        cloud_release.set(); assert await overflow == "cloud answer"
+        release.set(); assert await first == await second == await background == await queued_reply == "local answer"
+        assert await router.reply(prompt, **kwargs) == "local answer", "new work returns to local immediately"
+        assert len(seen_cloud) == 1
+        assert router.view()["local_in_flight"] == router.view()["cloud_in_flight"] == 0
+        await router.aclose()
+    asyncio.run(run())
+
+
+def test_same_port_overflow_cooldown_timeout_and_cancellation():
+    import asyncio
+    from npc_rag.llm import OpenAIClient, OverflowClient, LLMError
+    async def run():
+        entered, release = asyncio.Event(), asyncio.Event()
+        clock = [0]; cloud_calls = []
+        async def local_handler(request):
+            entered.set(); await release.wait()
+            return httpx.Response(200, json={"choices": [{"message": {"content": "local answer"}}]})
+        def cloud_handler(request):
+            cloud_calls.append(request)
+            return httpx.Response(429, json={"error": "private details"})
+        router = OverflowClient(LlamaClient("http://local", transport=httpx.MockTransport(local_handler)),
+            OpenAIClient("key", transport=httpx.MockTransport(cloud_handler)), local_capacity=1, now=lambda: clock[0])
+        kwargs = {"max_tokens": 100, "temperature": 0, "timeout": 2}
+        first = asyncio.create_task(router.reply([], **kwargs)); await entered.wait()
+        with pytest.raises(LLMError, match="HTTP 429"):
+            await router.reply([], **kwargs)
+        assert router.view()["cloud_cooldown_s"] == 30
+        with pytest.raises(LLMError, match="timed out"):
+            await router.reply([], **{**kwargs, "timeout": 0.01})
+        assert len(cloud_calls) == 1, "cooldown queues locally without another paid request"
+        clock[0] = 31
+        with pytest.raises(LLMError, match="HTTP 429"):
+            await router.reply([], **kwargs)
+        assert len(cloud_calls) == 2, "overflow retries only after cooldown expires"
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError): await first
+        assert router.view()["local_in_flight"] == router.view()["cloud_in_flight"] == 0
+        release.set(); assert await router.reply([], **kwargs) == "local answer"
+        await router.aclose()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("name,value", [("OPENAI_LOCAL_CAPACITY", "0"), ("OPENAI_CONCURRENCY", "65"),
+    ("OPENAI_TIMEOUT", "nan"), ("OPENAI_TIMEOUT", "-1")])
+def test_overflow_configuration_rejects_invalid_limits(name, value, monkeypatch):
+    from npc_rag.config import load_settings
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ValueError, match=name): load_settings()
+
+
 class FakeLlama:
     """Records every request and answers with a queued reply (or an HTTP error)."""
 

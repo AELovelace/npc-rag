@@ -100,7 +100,8 @@ def main(argv: list[str] | None = None) -> int:
     b = sub.add_parser("build-index", help="fetch the wiki and (re)build data/index")
     b.add_argument("--source", help="wiki URL or local web/wiki folder (default: WIKI_SOURCE)")
 
-    sub.add_parser("serve", help="run the service on NPC_PORT (default 9092)")
+    serve = sub.add_parser("serve", help="run the service on NPC_PORT (default 9092)")
+    serve.add_argument("--env-file", help="optional alternate environment file; defaults to .env")  # No secrets enter process arguments.
 
     se = sub.add_parser("search", help="search the local index from the command line")
     se.add_argument("query")
@@ -129,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
             import uvicorn
             uvicorn.run(create_gm_app(settings), host=settings.host, port=settings.port, log_level="info")
         return 0
-    s = load_settings()
+    s = load_settings(getattr(args, "env_file", None))
     commands = {"build-index": cmd_build_index, "serve": cmd_serve, "search": cmd_search, "ask": cmd_ask, "eval": cmd_eval}
     return commands[args.cmd](s, args)
 

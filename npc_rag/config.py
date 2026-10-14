@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent  # Repository root: data/, prompts and the .env file live here.
@@ -31,6 +32,20 @@ def _env_int(name: str, default: int) -> int:
 
 def _env_float(name: str, default: float) -> float:
     return float(_env(name, str(default)))
+
+
+def _positive_int(name: str, default: int) -> int:
+    value = _env_int(name, default)
+    if not 1 <= value <= 64:
+        raise ValueError(f"{name} must be an integer from 1 to 64")
+    return value  # Reject invalid capacity instead of silently creating an unlimited paid queue.
+
+
+def _positive_float(name: str, default: float) -> float:
+    value = _env_float(name, default)
+    if not math.isfinite(value) or not 0 < value <= 120:
+        raise ValueError(f"{name} must be greater than zero and at most 120 seconds")
+    return value
 
 
 def _path(name: str, default: str) -> Path:
@@ -92,11 +107,17 @@ class Settings:
     companion_max_tokens: int = 100       # Generation cap for companions (replies are cut to 240 characters anyway).
     companion_note_k: int = 2             # Wiki notes a companion's game answer may use (Pip keeps RAG_TOP_K).
     companion_note_words: int = 120       # Each companion note is cut to this many words: prompt reading is most of a reply's time.
+    openai_api_key: str = field(default="", repr=False)  # Keep the provider secret out of Settings diagnostics.
+    openai_model: str = "gpt-6-luna"       # Explicit requested API model; configurable for later evaluation.
+    openai_local_capacity: int = 4        # Total active local generations on this RAG process before cloud overflow.
+    openai_concurrency: int = 4           # Maximum concurrent cloud generations per RAG process.
+    openai_timeout: float = 12.0          # Cloud deadline, bounded further by the caller's reply timeout.
 
 
-def load_settings() -> Settings:
+def load_settings(env_file: str | None = None) -> Settings:
     """Build Settings from the environment, loading ROOT/.env first."""
-    _load_dotenv(ROOT / ".env")
+    selected = Path(env_file) if env_file else _path("NPC_ENV_FILE", ".env")
+    _load_dotenv(selected if selected.is_absolute() else ROOT / selected)  # A separate file lets both services share this checkout.
     return Settings(
         llm_url=_env("LLM_URL", "http://127.0.0.1:9090").rstrip("/"),  # A comma list spreads replies over several copies (llm.make_llm).
         classifier_url=_env("CLASSIFIER_URL", "http://127.0.0.1:9091").rstrip("/"),
@@ -141,4 +162,9 @@ def load_settings() -> Settings:
         companion_max_tokens=_env_int("COMPANION_MAX_TOKENS", 100),
         companion_note_k=_env_int("COMPANION_NOTE_K", 2),
         companion_note_words=_env_int("COMPANION_NOTE_WORDS", 120),
+        openai_api_key=_env("OPENAI_API_KEY", ""),
+        openai_model=_env("OPENAI_MODEL", "gpt-6-luna"),
+        openai_local_capacity=_positive_int("OPENAI_LOCAL_CAPACITY", 4),
+        openai_concurrency=_positive_int("OPENAI_CONCURRENCY", 4),
+        openai_timeout=_positive_float("OPENAI_TIMEOUT", 12.0),
     )

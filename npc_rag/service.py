@@ -24,7 +24,7 @@ from .common import Sessions, api_key_guard
 from .config import Settings
 from .guard import find_unsupported_terms, leaks_persona, retry_rule, select_hits, to_ascii
 from .index import WikiIndex
-from .llm import LlamaClient, LLMError, make_llm
+from .llm import LlamaClient, LLMError, make_reply_llm
 from .prompts import (LEAK_REPLY, build_messages, clean_name, fallback_reply, rules_text, tidy_reply,
                       unsure_reply)
 from .wiki import load_pages
@@ -102,8 +102,7 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
             state["embedder"] = Embedder(settings.embed_model, settings.embed_cache, settings.embed_threads)
         if state["index"] is None:
             state["index"] = await asyncio.to_thread(load_or_build, settings, state["embedder"])
-        state["llm"] = llm or make_llm(settings.llm_url, settings.llm_model, settings.llm_api_key,
-                                          settings.llm_concurrency)
+        state["llm"] = llm or make_reply_llm(settings)  # The same guarded pipelines support either local or overflow generation.
         state["classifier"] = classifier_llm or LlamaClient(settings.classifier_url, settings.classifier_model,
                                                             settings.llm_api_key, settings.llm_concurrency)
         state["persona"] = settings.persona_path.read_text(encoding="utf-8")
@@ -142,6 +141,7 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
         idx: WikiIndex = state["index"]
         return {"ok": idx is not None, "service": "npc-rag", "llm": llm_ok, "classifier": clf_ok,
                 "llm_url": settings.llm_url, "classifier_url": settings.classifier_url,
+                "overflow": state["llm"].view() if hasattr(state["llm"], "view") else {"enabled": False},
                 "index": idx.meta if idx else None}
 
     @app.post("/v1/search", dependencies=[guard])
@@ -193,7 +193,8 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
         """
         attempt_messages = messages
         for attempt in range(settings.guard_retries + 1):
-            raw = await state["llm"].chat(attempt_messages, max_tokens=max_tokens or settings.max_tokens,
+            reply_model = getattr(state["llm"], "reply", state["llm"].chat)  # Only guarded player replies may use overflow; background jobs call chat().
+            raw = await reply_model(attempt_messages, max_tokens=max_tokens or settings.max_tokens,
                                           temperature=settings.temperature if attempt == 0 else RETRY_TEMPERATURE,
                                           timeout=settings.llm_timeout)
             if leaks_persona(raw, persona):
