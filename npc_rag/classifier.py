@@ -5,6 +5,8 @@ Exact social forms skip model/retrieval work. Other messages run the classifier 
           model said (the 3B calls needs/accident questions small talk about 1 time in 10); so does a
           slightly lower score (RAG_KEYWORD_DENSE) when one wiki chunk holds most of the message's
           meaningful words (RAG_KEYWORD_COVERAGE) - short keyword questions embed weakly
+With wiki_first (the in-process Decider) the model is only asked after weak wiki evidence: a native
+run cannot be abandoned, so starting it for messages the wiki then decides would only queue the next player.
   llm   - otherwise the model's GAME or CHAT answer decides
   wiki  - and if the model is down or answers something else, a low wiki score means chat
 """
@@ -20,6 +22,24 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
 GAME, GENERAL = "game", "general"
+
+
+class ModelDecision(str):
+    """A string-compatible label carrying optional confidence through the existing cache."""
+
+    def __new__(cls, category, game_probability):
+        if category not in (GAME, GENERAL) or not math.isfinite(game_probability) or not 0 <= game_probability <= 1:
+            raise ValueError("Invalid model decision")
+        value = super().__new__(cls, category)
+        value.game_probability = float(game_probability)
+        return value  # Existing string comparisons/JSON labels remain compatible; the cache keeps this object.
+
+
+def model_scores(answer):
+    scores = {"llm": answer}
+    if isinstance(answer, ModelDecision):
+        scores["game_probability"] = answer.game_probability
+    return scores
 
 CLASSIFIER_REVISION = "hybrid-v2"  # Increment when routing rules or the classification prompt change.
 CLASSIFY_GRAMMAR = 'root ::= "GAME" | "CHAT"'  # The server may generate only these two complete labels.
@@ -139,12 +159,14 @@ def parse_verdict(text: str) -> str | None:
 
 async def classify(message: str, *, ask_llm: Callable[[str], Awaitable[str | None]],
                    evidence: Callable[[str], Awaitable[float | dict | None]], wiki_evidence: float,
-                   keyword_coverage: float | None = None, keyword_dense: float | None = None) -> Verdict:
+                   keyword_coverage: float | None = None, keyword_dense: float | None = None,
+                   wiki_first: bool = False) -> Verdict:
     """ask_llm returns "game"/"general" or None; evidence returns the best wiki score, a
-    {"dense": best, "coverage": keyword share} dict, or None. Leaving keyword_coverage unset disables the keyword rule."""
+    {"dense": best, "coverage": keyword share} dict, or None. Leaving keyword_coverage unset disables the keyword rule.
+    wiki_first waits for the wiki before starting the model, for backends that cannot cancel a started run."""
     if is_social_message(message):
         return Verdict(GENERAL, "social", {"llm": None, "wiki_best": None})  # No model or embedding work for exact social forms.
-    model_task = asyncio.create_task(ask_llm(message))  # Start both signals together to avoid serial latency.
+    model_task = None if wiki_first else asyncio.create_task(ask_llm(message))  # Otherwise start both together to avoid serial latency.
     wiki_task = asyncio.create_task(evidence(message))
     try:
         found = await wiki_task  # Finish retrieval so the caller can reuse its cached notes.
@@ -153,16 +175,19 @@ async def classify(message: str, *, ask_llm: Callable[[str], Awaitable[str | Non
         keyword_hit = (keyword_coverage is not None and keyword_dense is not None and coverage is not None
                        and coverage >= keyword_coverage and best is not None and best >= keyword_dense)
         if best is not None and (best >= wiki_evidence or keyword_hit):
-            answer = model_task.result() if model_task.done() else None
+            answer = model_task.result() if model_task is not None and model_task.done() else None
             return Verdict(GAME, "wiki" if answer != GAME else "llm",
-                           {"llm": answer, **wiki})  # Strong evidence needs no further model wait.
+                           {**model_scores(answer), **wiki})  # Strong evidence needs no further model wait.
+        if model_task is None:
+            model_task = asyncio.create_task(ask_llm(message))  # Weak evidence: only now spend a native model run.
         answer = await model_task  # Weak evidence still needs the model's GAME/CHAT decision.
-        scores = {"llm": answer, **wiki}
+        scores = {**model_scores(answer), **wiki}
         if answer in (GAME, GENERAL):
             return Verdict(answer, "llm", scores)
         return Verdict(GENERAL, "wiki", scores)  # Model down and the wiki barely matches: small talk.
     finally:
-        for task in (model_task, wiki_task):
+        tasks = [task for task in (model_task, wiki_task) if task is not None]  # wiki_first may never start the model.
+        for task in tasks:
             if not task.done():
                 task.cancel()  # Release queued/in-flight classifier work, including on caller cancellation.
-        await asyncio.gather(model_task, wiki_task, return_exceptions=True)  # Consume results; leave no orphan tasks.
+        await asyncio.gather(*tasks, return_exceptions=True)  # Consume results; leave no orphan tasks.

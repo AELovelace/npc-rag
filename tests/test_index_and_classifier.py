@@ -93,6 +93,25 @@ def test_keyword_coverage_lowers_the_override_bar():
     assert _run_keyword(None, 0.45, 0.8).category == GAME  # Also the fallback while the model is down.
 
 
+def test_wiki_first_skips_the_model_when_the_wiki_decides():
+    asked = []
+
+    async def ask(message):
+        asked.append(message)
+        return GENERAL
+
+    def run(dense):
+        async def evidence(_):
+            assert not asked  # The model must not start before the wiki answers.
+            return dense
+        return asyncio.run(classify("purple banana", ask_llm=ask, evidence=evidence, wiki_evidence=0.5, wiki_first=True))
+
+    strong = run(0.9)
+    assert (strong.category, strong.method, strong.scores["llm"], asked) == (GAME, "wiki", None, [])
+    weak = run(0.3)
+    assert (weak.category, weak.method, asked) == (GENERAL, "llm", ["purple banana"])  # Weak evidence still asks once.
+
+
 def test_verdict_brief_for_log_lines():
     assert Verdict(GAME, "wiki", {"llm": GENERAL, "wiki_best": 0.71234, "wiki_keyword": 0.5}).brief() ==         "llm=general wiki_best=0.7123 wiki_keyword=0.5"
     assert Verdict(GAME, "caller").brief() == "-"

@@ -8,7 +8,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .classifier import CLASSIFY_GRAMMAR, GAME, GENERAL, classifier_messages, parse_verdict
+from .classifier import CLASSIFY_GRAMMAR, GAME, GENERAL, ModelDecision, classifier_messages, parse_verdict
 from .config import ROOT
 from .decider_policy import DECIDER_LABELS, DECIDER_OPTIONS, DECIDER_POLICY, DECIDER_QUESTION
 from .llm import LlamaClient, LLMError
@@ -132,7 +132,7 @@ class DeciderClassifier:
         choice = row["choice"]
         if choice not in probs or float(probs[choice]) < max(values):
             raise ValueError("Invalid Decider choice")
-        return DECIDER_LABELS[choice]
+        return ModelDecision(DECIDER_LABELS[choice], values[0])  # Retain GAME confidence even when CHAT wins.
 
     async def decide(self, message):
         try:
@@ -151,7 +151,9 @@ class DeciderClassifier:
 
     def view(self):
         return {"backend": "decider", "decision_policy": DECIDER_POLICY,
-                "model": self.settings.decider_model, "gguf_file": self.settings.decider_gguf_file,
+                "model": self.settings.decider_model,
+                "engine": getattr(self, '_engine_name', 'gguf'),
+                "gguf_file": None if getattr(self, '_engine_name', 'gguf') == 'torch-bf16' else self.settings.decider_gguf_file,
                 "threads": self.settings.decider_threads, "gpu_layers": self.settings.decider_gpu_layers,
                 "context": self.settings.decider_context, "capacity": 1, "busy": self._busy,
                 "failures": self._failures}
@@ -176,3 +178,20 @@ def make_classifier(settings, *, client=None):
         return DeciderClassifier(settings)
     return ChatClassifier(LlamaClient(settings.classifier_url, settings.classifier_model,
                                      settings.llm_api_key, settings.llm_concurrency), settings.classifier_timeout)
+
+
+def make_torch_eval_classifier(settings, model_path):
+    """Evaluate local merged weights through the serving policy without changing serving configuration."""
+    from dataclasses import replace
+    path = Path(model_path).resolve()
+    config = json.loads((path / 'decider_config.json').read_text(encoding='utf-8'))
+    if 'temperature' not in config or config.get('routing_policy', DECIDER_POLICY) != DECIDER_POLICY:
+        raise ValueError('Evaluation checkpoint lacks temperature or uses a different routing policy')
+
+    def factory(source, **kwargs):
+        from decider.infer import Decider
+        return Decider(source, device='cuda', use_graphs=False)  # Eager BF16 uses the upstream Torch readout.
+
+    backend = DeciderClassifier(replace(settings, classifier_backend='decider', decider_model=str(path)), factory=factory)
+    backend._engine_name = 'torch-bf16'
+    return backend

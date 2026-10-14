@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from npc_rag.decider_policy import DECIDER_OPTIONS, DECIDER_POLICY, DECIDER_QUESTION
 from build_classifier_seed import normalize
+from classifier_augmentation import augment_rows, augmentation_stats
 
 LABELS = ("game", "general")
 DEFAULT_REVISION = "ff99089b6810691bd79134ec6febb5d9afa6e619"  # Verified Mapika 2B v11 trainable weights.
@@ -54,6 +55,27 @@ def load_dataset(path):
     if any(set(r["label"] for r in splits[s]) != set(LABELS) for s in ("train", "validation", "test")):
         raise ValueError("Every split must contain both labels")
     return dict(splits)
+
+
+def load_development(path, splits):
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    reserved, families, ids = set(), set(), set()
+    for group in splits.values():
+        for row in group:
+            reserved.add(normalize(row['message'])); families.add(row['family_id']); ids.add(row['id'])
+    for name in ("eval_messages.json", "eval_mixed_messages.json"):
+        data = json.loads((ROOT / 'data' / name).read_text(encoding='utf-8'))
+        reserved.update(normalize(s) for label in LABELS for s in data[label])
+    for row in rows:
+        key = normalize(row['message'])
+        if key in reserved or row['family_id'] in families or row['id'] in ids:
+            raise ValueError('Development overlaps training families/messages or fixed evaluation')
+        if row['label'] not in LABELS or row['split'] != 'development' or not 0 < len(row['message']) <= 500:
+            raise ValueError('Invalid development row')
+        reserved.add(key); ids.add(row['id'])
+    if not 150 <= len(rows) <= 300 or {r['label'] for r in rows} != set(LABELS):
+        raise ValueError('Development requires 150-300 rows and both labels')
+    return rows  # This set alone selects checkpoints; fixed evaluation is only an exclusion list here.
 
 
 class KeepOrder:
@@ -99,6 +121,8 @@ def report_rows(rows):
         by_class[label] = {"total": len(subset), "correct": correct,
                            "recall": correct / len(subset) if subset else None}
     return {"total": len(rows), "accuracy": sum(r["expected"] == r["predicted"] for r in rows) / len(rows),
+            "game_missed_as_chat": sum(r['expected'] == 'game' and r['predicted'] == 'general' for r in rows),
+            "chat_sent_to_game": sum(r['expected'] == 'general' and r['predicted'] == 'game' for r in rows),
             "by_class": by_class, "gate_passed": all(v["recall"] is not None and v["recall"] >= .9 for v in by_class.values())}
 
 
@@ -120,7 +144,7 @@ def evaluate(model, encoded, letters, dtype):
             losses.append(F.cross_entropy(logits.float(), target).item())
             rows.append({"id": item["id"], "expected": item["expected"],
                          "predicted": LABELS[item["perms"][0][prediction]],
-                         "probabilities_by_option_order": probs})
+                         "probabilities_by_option_order": probs, "logits": logits.float()[0].cpu().tolist()})
     result = report_rows(rows)
     result.update(loss=sum(losses) / len(losses), rows=rows)
     model.train()
@@ -158,6 +182,7 @@ def run(args, splits):
     if any(len(x) != 1 for x in letters_list) or letters_list[0] == letters_list[1]:
         raise ValueError("Expected distinct single-token A/B option letters")
     letters = torch.tensor([x[0] for x in letters_list], device="cuda", dtype=torch.long)
+    splits = {**splits, 'development': load_development(args.dev_dataset, splits)}
     selected = {key: rows[:8] if args.smoke_test else rows for key, rows in splits.items()}
     encoded = {key: encode_rows(rows, tokenizer, args.max_tokens, shuffle_options=key == "train", seed=args.seed)
                for key, rows in selected.items() if key != "test"}  # Test examples are not scored during checkpoint selection.
@@ -181,6 +206,8 @@ def run(args, splits):
                 "state_encoding": 'json.dumps({"message": message}, ensure_ascii=False)',
                 "dataset_sha256": hashlib.sha256(args.dataset.read_bytes()).hexdigest(),
                 "dataset": str(args.dataset), "seed": args.seed, "rank": args.rank,
+                "development_sha256": hashlib.sha256(args.dev_dataset.read_bytes()).hexdigest(),
+                "selection": "development worst-class recall, accuracy, negative loss",
                 "epochs": args.epochs, "learning_rate": args.learning_rate, "accumulation": args.accumulation,
                 "max_tokens": args.max_tokens, "smoke_test": args.smoke_test,
                 "gpu": torch.cuda.get_device_name(0), "trainable_parameters": sum(p.numel() for p in trainable),
@@ -190,9 +217,10 @@ def run(args, splits):
     write_json(args.output / "run.json", metadata)
     print(json.dumps({"gpu": metadata["gpu"], "revision": revision, "trainable_parameters": metadata["trainable_parameters"],
                       "max_prompt_tokens": max(len(i["ids"]) for group in encoded.values() for i in group)}, indent=2), flush=True)
-    baseline = evaluate(model, encoded["validation"], letters, dtype)
-    write_json(args.output / "baseline-validation.json", baseline)
-    print("Baseline validation:", json.dumps({k: v for k, v in baseline.items() if k != "rows"}), flush=True)
+    baseline = evaluate(model, encoded["development"], letters, dtype)
+    write_json(args.output / "baseline-development.json", baseline)
+    write_json(args.output / "baseline-validation.json", evaluate(model, encoded['validation'], letters, dtype))
+    print("Baseline development:", json.dumps({k: v for k, v in baseline.items() if k != "rows"}), flush=True)
     optimizer = torch.optim.AdamW(trainable, lr=args.learning_rate, weight_decay=.01)
     accumulation = 4 if args.smoke_test else args.accumulation
     epochs = 1 if args.smoke_test else args.epochs
@@ -202,7 +230,10 @@ def run(args, splits):
     torch.cuda.reset_peak_memory_stats()
     started = time.perf_counter()
     for epoch in range(epochs):
-        items = list(encoded["train"])
+        augmented = augment_rows(selected['train'], args.seed + epoch)
+        stats = augmentation_stats(augmented) if not args.smoke_test else {'smoke_subset': True}
+        write_json(args.output / f'epoch-{epoch + 1}-augmentation.json', {'stats': stats, 'rows': augmented})
+        items = encode_rows(augmented, tokenizer, args.max_tokens, shuffle_options=True, seed=args.seed + epoch)
         random.Random(args.seed + epoch).shuffle(items)
         model.train()
         for start in range(0, len(items), accumulation):
@@ -235,13 +266,20 @@ def run(args, splits):
                 print(json.dumps(progress), flush=True)
         validation = evaluate(model, encoded["validation"], letters, dtype)
         write_json(args.output / f"epoch-{epoch + 1}-validation.json", validation)
-        score = (min(v["recall"] for v in validation["by_class"].values()), validation["accuracy"], -validation["loss"])
-        history.append({"epoch": epoch + 1, "validation": {k: v for k, v in validation.items() if k != "rows"}})
+        development = evaluate(model, encoded['development'], letters, dtype)
+        write_json(args.output / f'epoch-{epoch + 1}-development.json', development)
+        score = (min(v["recall"] for v in development["by_class"].values()), development["accuracy"], -development["loss"])
+        history.append({"epoch": epoch + 1, "validation": {k: v for k, v in validation.items() if k != "rows"},
+                        'development': {k: v for k, v in development.items() if k != 'rows'}})
+        print('Development:', json.dumps(history[-1]['development']), flush=True)
         if best is None or score > best:
             best, best_epoch = score, epoch + 1
             model.save_pretrained(args.output / "best-adapter", safe_serialization=True)
             tokenizer.save_pretrained(args.output / "best-adapter")
             write_json(args.output / "best-adapter" / "routing_policy.json", metadata)
+            write_json(args.output / 'best-adapter' / 'decider_config.json',
+                       {**decision_config, 'temperature': 1.0, 'temperature_by_type': {},
+                        'calibration_status': 'uncalibrated_after_finetuning', 'routing_policy': DECIDER_POLICY})
         write_json(args.output / "history.json", history)
     model.load_adapter(str(args.output / "best-adapter"), adapter_name="selected", is_trainable=False)
     model.set_adapter("selected")  # Verify the saved adapter can be reloaded before reporting completion.
@@ -259,7 +297,7 @@ def run(args, splits):
     write_json(args.output / "completion.json", {"completed": True, "smoke_test": args.smoke_test,
                "seconds": round(time.perf_counter() - started, 2), "steps": step,
                "selected_epoch": best_epoch,
-               "validation_improved_over_baseline": best > (
+               "development_improved_over_baseline": best > (
                    min(v["recall"] for v in baseline["by_class"].values()), baseline["accuracy"], -baseline["loss"]),
                "peak_vram_gib": round(torch.cuda.max_memory_allocated() / 2**30, 2), "deployment_ready": False})
     print("Adapter:", args.output / "best-adapter", flush=True)
@@ -268,7 +306,8 @@ def run(args, splits):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", type=Path, default=ROOT / "data/classifier/synthetic-pilot-v1.jsonl")
+    parser.add_argument("--dataset", type=Path, default=ROOT / "data/classifier/synthetic-pilot-v2.jsonl")
+    parser.add_argument("--dev-dataset", type=Path, default=ROOT / "data/classifier/realistic-dev-v2.jsonl")
     parser.add_argument("--output", type=Path, default=ROOT / "runs" / ("classifier-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")))
     parser.add_argument("--model", default="Mapika/decider-2b")
     parser.add_argument("--revision", default=DEFAULT_REVISION)
@@ -284,7 +323,9 @@ def main():
     if args.epochs < 1 or args.rank < 1 or args.accumulation < 1 or args.max_tokens < 128 or not 0 < args.learning_rate < 1:
         parser.error("Invalid training hyperparameter")
     splits = load_dataset(args.dataset)
+    development = load_development(args.dev_dataset, splits)
     print(json.dumps({"counts": {s: dict(Counter(r["label"] for r in rows)) for s, rows in splits.items()},
+                      "development_rows": len(development),
                       "synthetic_draft_rows": sum(r.get("review_status") != "approved" for rows in splits.values() for r in rows)}, indent=2), flush=True)
     if not args.check_data:
         run(args, splits)

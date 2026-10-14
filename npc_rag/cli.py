@@ -70,6 +70,11 @@ def cmd_eval(s, args) -> int:
             raise ValueError("--classifier-url requires --classifier-backend llamacpp")
         s = replace(s, classifier_url=args.classifier_url)
     llm = None if args.wiki_only else make_classifier(s)  # Wiki-only evaluation never downloads or loads Decider.
+    if getattr(args, 'decider_torch_model', None):
+        if args.wiki_only or s.classifier_backend != 'decider':
+            raise ValueError('--decider-torch-model requires Decider model evaluation')
+        from .classifier_backend import make_torch_eval_classifier
+        llm = make_torch_eval_classifier(s, args.decider_torch_model)
     data = json.loads((ROOT / "data" / "eval_messages.json").read_text(encoding="utf-8"))
     cases = [(label, msg, "held_out") for label in ("game", "general") for msg in data[label]]
     if args.include_mixed:
@@ -106,11 +111,15 @@ def cmd_eval(s, args) -> int:
                 row = {"expected": label, "message": msg, "dataset": dataset}
                 try:
                     if args.raw_model:
-                        row.update(category=await ask(msg), method="raw_model")
+                        decision = await ask(msg)
+                        row.update(category=decision, method="raw_model")
+                        if hasattr(decision, 'game_probability'):
+                            row['game_probability'] = decision.game_probability
                     else:
                         row.update((await classify(msg, ask_llm=ask, evidence=evidence, wiki_evidence=s.rag_game_evidence,
                                                    keyword_coverage=s.rag_keyword_coverage,
-                                                   keyword_dense=s.rag_keyword_dense)).to_dict())
+                                                   keyword_dense=s.rag_keyword_dense,
+                                                   wiki_first=s.classifier_backend == "decider")).to_dict())  # Same order as the service.
                 except Exception as exc:
                     row.update(category=None, method="error", error=type(exc).__name__)  # Failed requests count as wrong.
                 row["ms"] = round((time.perf_counter() - start) * 1000)
@@ -169,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--wiki-only", action="store_true", help="skip the classifier model; wiki score only")
     e.add_argument("--raw-model", action="store_true", help="measure model decisions without social shortcuts or wiki overrides")
     e.add_argument("--classifier-url", help="test another model endpoint without changing the service environment")
+    e.add_argument('--decider-torch-model', type=Path, help='evaluate local base/merged Torch weights on CUDA (evaluation only)')
     e.add_argument("--evidence-url", help="use /v1/search on this RAG base URL instead of the local wiki index")
     e.add_argument("--include-mixed", action="store_true", help="also check greeting-plus-mechanics and emotional messages")
     e.add_argument("--output", help="write per-message decisions, timing and accuracy to a JSON artifact")

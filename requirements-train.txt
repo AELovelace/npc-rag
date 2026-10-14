@@ -9,5 +9,6 @@ huggingface-hub==2.2.0
 tokenizers==0.23.3
 safetensors==0.8.0
 numpy==2.4.6
+httpx==0.28.1
 flash-linear-attention==0.5.2
 fla-core==0.5.2

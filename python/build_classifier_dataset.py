@@ -12,6 +12,8 @@ import random
 
 from build_classifier_seed import ROOT, SEEDS, normalize
 from classifier_expansion import EXTRA
+from classifier_diversity import PAIRS, DEV
+from classifier_augmentation import augment_rows, augmentation_stats, check_shortcut
 
 PREFIXES = ("hey friend, ", "quick thing: ", "so, ", "one more thing: ", "please hear me out: ")
 
@@ -78,8 +80,7 @@ def build(wiki_root):
         for number, pair in enumerate(base + EXTRA[topic], 1):
             family = f"{topic}-{number:02d}"
             for label, message in zip(("game", "general"), pair):
-                variant = PREFIXES[(number - 1) % len(PREFIXES)] + message[0].lower() + message[1:]
-                for kind, text in (("authored", message), ("conversational_prefix", variant)):
+                for kind, text in (("authored", message.lower().replace("?", "").rstrip(".! ")),):
                     normalized = normalize(text)
                     if not text.strip() or len(text) > 500 or normalized in seen or normalized in heldout:
                         raise ValueError(f"Duplicate, evaluation overlap or invalid message: {family}/{label}/{kind}")
@@ -87,26 +88,77 @@ def build(wiki_root):
                     rows.append({"id": f"pilot-v1-{family}-{label}-{kind}", "message": text, "label": label,
                                  "family_id": family, "topic": topic, "variant": kind,
                                  "source_page": f"content/{topic}.md", "origin": "assistant_authored_synthetic",
-                                 "review_status": "synthetic_draft"})
+                                 "review_status": "synthetic_draft", "label_rule": "game_help" if label == "game" else "off_topic"})
+    rows.extend(authored_pairs(PAIRS, "pilot-v2"))
+    validate_unique(rows, heldout)
     if len(rows) != 1000:
         raise ValueError(f"Expected 1,000 rows; found {len(rows)}")
     matches = partition(rows)
-    manifest = {"schema_version": 1, "created_at": datetime.now(timezone.utc).isoformat(),
-                "total": len(rows), "authored_messages": 500, "prefix_augmented_messages": 500,
-                "families": 250, "split_seed": 417, "labels": dict(Counter(r["label"] for r in rows)),
+    dev = authored_pairs(DEV, "dev-v2", split="development")
+    validate_unique(rows + dev, heldout)
+    manifest = {"schema_version": 2, "created_at": datetime.now(timezone.utc).isoformat(),
+                "total": len(rows), "authored_messages": len(rows), "prefix_augmented_messages": 0,
+                "families": len({r['family_id'] for r in rows}), "split_seed": 417, "labels": dict(Counter(r["label"] for r in rows)),
                 "splits": {s: dict(Counter(r["label"] for r in rows if r["split"] == s))
                            for s in ("train", "validation", "test")},
                 "wiki_sha256": source_hashes, "evaluation_sha256": evaluation_hashes,
                 "near_duplicate_grouping_threshold": .82, "grouped_similar_pairs": matches,
                 "evaluation_overlap_normalized": 0, "player_logs_used": False,
                 "independent_label_review": False, "release_qualified": False,
-                "notes": ["1,000 rows represent 250 paired families, not 1,000 independent intents.",
-                          "500 authored messages plus 500 explicit prefix augmentations; no hidden bulk paraphrasing.",
+                "shortcut": check_shortcut(rows),
+                "development": {"total": len(dev), "labels": dict(Counter(r['label'] for r in dev)),
+                                "shortcut": check_shortcut(dev)},
+                "short_rows_by_label": dict(Counter(r['label'] for r in rows if len(r['message'].split()) <= 4)),
+                "augmentation": {"mode": "on_the_fly_per_epoch", "label_independent": True,
+                                 "preview_epochs": [augmentation_stats(augment_rows([r for r in rows if r['split'] == 'train'], 417 + epoch)) for epoch in range(2)]},
+                "notes": ["1,000 genuinely distinct authored messages; paired contrasts still share semantic families.",
+                          "Prefixes and noise are sampled per epoch and never inflate stored row counts.",
                           "Train/validation/test are 800/100/100 with whole families and similar pairs kept together.",
-                          "Synthetic validation guides the experiment; final qualification needs reviewed real traffic.",
+                          "Separate 200-row realistic development set selects checkpoints by worst-class recall.",
                           "Only message text enters the model. Labels, topic, source and split never enter prompts.",
-                          "No unrelated ordinary-chat corpus or generic-task replay is included in this first pilot."]}
-    return rows, manifest
+                          "Synthetic labels remain drafts; final qualification needs reviewed real traffic."]}
+    return rows, dev, manifest
+
+
+def authored_pairs(groups, prefix, split=None):
+    rows = []
+    for topic, block in groups.items():
+        for number, line in enumerate(block.strip().splitlines(), 1):
+            pair = line.split("|")
+            if len(pair) != 2:
+                raise ValueError(f"Invalid authored pair: {topic}/{number}")
+            # A whole topic family stays together, including any implicit semantic paraphrases.
+            family = f"{prefix}-{topic}"
+            for label, message in zip(("game", "general"), pair):
+                rule = "game_help" if label == "game" else "off_topic"
+                if label == "game" and topic in ("game-problems", "implicit-needs", "dev-bugs"):
+                    rule = "game_problem"
+                if label == "general" and topic in ("implicit-needs",):
+                    rule = "vent_only"
+                if label == "general" and topic in ("lore-and-advice", "dev-lore", "dev-advice", "short-world"):
+                    rule = "character_opinion"
+                if label == "game" and topic in ("mixed-intents", "dev-mixed"):
+                    rule = "mixed_game_request"
+                if label == "general" and topic in ("short-controls", "dev-interface"):
+                    rule = "context_missing"
+                row = {"id": f"{prefix}-{topic}-{number:02d}-{label}", "message": message.strip(),
+                       "label": label, "family_id": family, "topic": topic, "variant": "authored",
+                       "origin": "assistant_authored_synthetic", "review_status": "synthetic_draft", "label_rule": rule}
+                if split:
+                    row.update(split=split, split_group=family)
+                rows.append(row)
+    return rows
+
+
+def validate_unique(rows, heldout):
+    seen = set()
+    for row in rows:
+        text = normalize(row['message'])
+        if text in heldout:
+            raise ValueError(f"Fixed evaluation overlap: {row['id']}")  # Exclusion only: never print or adapt evaluation wording.
+        if text in seen:
+            raise ValueError(f"Duplicate authored message: {row['id']}")
+        seen.add(text)
 
 
 def main():
@@ -114,12 +166,15 @@ def main():
     parser.add_argument("--wiki-root", required=True, type=Path)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "data" / "classifier")
     args = parser.parse_args()
-    rows, manifest = build(args.wiki_root)
+    rows, dev, manifest = build(args.wiki_root)
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    path = args.output_dir / "synthetic-pilot-v1.jsonl"
+    path = args.output_dir / "synthetic-pilot-v2.jsonl"
     path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
     manifest["dataset_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
-    (args.output_dir / "synthetic-pilot-v1.manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    dev_path = args.output_dir / "realistic-dev-v2.jsonl"
+    dev_path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in dev), encoding="utf-8")
+    manifest['development']['sha256'] = hashlib.sha256(dev_path.read_bytes()).hexdigest()
+    (args.output_dir / "synthetic-pilot-v2.manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"dataset": str(path), "total": len(rows), "splits": manifest["splits"],
                       "similar_pairs_grouped": len(manifest["grouped_similar_pairs"])}, indent=2))
 

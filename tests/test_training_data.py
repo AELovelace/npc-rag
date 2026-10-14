@@ -7,7 +7,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "python"))
-from train_classifier import load_dataset, report_rows
+from train_classifier import load_dataset, load_development, report_rows
+from classifier_augmentation import augment_rows, check_shortcut
 
 
 def fixture_rows():
@@ -26,7 +27,7 @@ def write_rows(tmp_path, rows):
 
 
 def test_checked_in_pilot_has_balanced_family_safe_partitions():
-    data = load_dataset(ROOT / "data/classifier/synthetic-pilot-v1.jsonl")
+    data = load_dataset(ROOT / "data/classifier/synthetic-pilot-v2.jsonl")
     assert {key: len(rows) for key, rows in data.items()} == {"train": 800, "validation": 100, "test": 100}
     for rows in data.values():
         assert sum(r["label"] == "game" for r in rows) == len(rows) // 2
@@ -60,3 +61,32 @@ def test_success_on_only_one_class_fails_training_report_gate():
                           {"expected": "general", "predicted": "general"}])
     assert report["accuracy"] == .5 and not report["gate_passed"]
     assert report["by_class"]["game"]["recall"] == 0
+
+
+def test_shortcut_ceiling_and_epoch_augmentation():
+    data = load_dataset(ROOT / 'data/classifier/synthetic-pilot-v2.jsonl')
+    check_shortcut(data['train'])
+    for seed in range(417, 437):
+        rows = augment_rows(data['train'], seed)
+        assert len(rows) == 800
+        assert [(r['id'], r['label'], r['family_id']) for r in rows] == [(r['id'], r['label'], r['family_id']) for r in data['train']]
+        check_shortcut(rows)
+    assert augment_rows(data['train'], 417) == augment_rows(data['train'], 417)
+    assert augment_rows(data['train'], 417) != augment_rows(data['train'], 418)
+    with pytest.raises(ValueError, match='shortcut'):
+        check_shortcut([{'message': 'mechanic?', 'label': 'game'}, {'message': 'you are nice', 'label': 'general'}])
+
+
+def test_development_separate_from_training_and_fixed_evaluation(tmp_path):
+    data = load_dataset(ROOT / 'data/classifier/synthetic-pilot-v2.jsonl')
+    rows = load_development(ROOT / 'data/classifier/realistic-dev-v2.jsonl', data)
+    assert len(rows) == 200
+    fixed = json.loads((ROOT / 'data/eval_messages.json').read_text())
+    rows[0]['message'] = fixed['general'][0]
+    with pytest.raises(ValueError, match='overlaps'):
+        load_development(write_rows(tmp_path, rows), data)
+
+
+def test_emoji_reactions_are_distinct():
+    from build_classifier_seed import normalize
+    assert normalize('😅') != normalize('🌻')

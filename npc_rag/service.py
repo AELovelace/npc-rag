@@ -164,7 +164,8 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
             cache["search"] = await search(q, settings.top_k)
             return {"dense": cache["search"]["best_dense"], "coverage": cache["search"]["keyword_coverage"]}
         return await classify(text, ask_llm=ask_classifier, evidence=evidence, wiki_evidence=settings.rag_game_evidence,
-                              keyword_coverage=settings.rag_keyword_coverage, keyword_dense=settings.rag_keyword_dense)
+                              keyword_coverage=settings.rag_keyword_coverage, keyword_dense=settings.rag_keyword_dense,
+                              wiki_first=settings.classifier_backend == "decider")  # Native runs can't be abandoned once started.
 
     @app.get("/health")
     async def health():

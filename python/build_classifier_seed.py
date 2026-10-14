@@ -162,7 +162,8 @@ SEEDS = {
 
 
 def normalize(message):
-    return " ".join(re.findall(r"\w+", message.casefold()))  # Catch casing, spacing and punctuation-only duplicates.
+    words = " ".join(re.findall(r"\w+", message.casefold()))
+    return words or message.strip()  # Preserve distinct emoji-only reactions while ignoring punctuation around words.
 
 
 def build(wiki_root):
