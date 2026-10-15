@@ -25,7 +25,7 @@ from .common import Sessions, api_key_guard
 from .config import Settings
 from .guard import find_unsupported_terms, leaks_persona, retry_rule, select_hits, to_ascii
 from .index import WikiIndex
-from .llm import LlamaClient, LLMError, make_reply_llm
+from .llm import LlamaClient, LLMError, background_chat, make_reply_llm
 from .prompts import (LEAK_REPLY, build_messages, clean_name, fallback_reply, rules_text, tidy_reply,
                       unsure_reply)
 from .wiki import load_pages
@@ -248,15 +248,24 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
             if pid:
                 in_flight.discard(pid)
 
-    async def generate(messages: list[dict], persona: str, sources: list[str], max_tokens: int | None = None) -> tuple[str | None, str]:
+    async def generate(messages: list[dict], persona: str, sources: list[str], max_tokens: int | None = None,
+                       *, lane: str = "local") -> tuple[str | None, str]:
         """Ask the model, check the reply, retry once if it names unsupported things.
 
+        lane: "paid" may overflow to OpenAI (player conversations only), "local" waits for a local slot,
+        "background" runs only while local slots are free for players (ambient NPC life). Anything else is "local".
         Returns (raw reply or None, guard verdict). None means the reply was rejected.
         """
         attempt_messages = messages
+        llm = state["llm"]
+        if lane == "paid":
+            model = getattr(llm, "reply", llm.chat)  # The only path that can bill: OverflowClient.reply().
+        elif lane == "background":
+            model = lambda m, **kw: background_chat(llm, m, reserve=settings.ambient_local_reserve, **kw)  # Never the cloud.
+        else:
+            model = llm.chat  # Local queue; OverflowClient.chat() never overflows.
         for attempt in range(settings.guard_retries + 1):
-            reply_model = getattr(state["llm"], "reply", state["llm"].chat)  # Only guarded player replies may use overflow; background jobs call chat().
-            raw = await reply_model(attempt_messages, max_tokens=max_tokens or settings.max_tokens,
+            raw = await model(attempt_messages, max_tokens=max_tokens or settings.max_tokens,
                                           temperature=settings.temperature if attempt == 0 else RETRY_TEMPERATURE,
                                           timeout=settings.llm_timeout)
             if leaks_persona(raw, persona):
@@ -314,7 +323,7 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
             persona = rules_text(npc_name=npc_name, player_name=player_name, persona=persona_text)  # The leak guard checks the persona actually used.
             sources = [m["content"] for m in messages] + [npc_name, player_name, *settings.guard_allowed_terms]
             try:
-                raw, guard_verdict = await generate(messages, persona, sources)
+                raw, guard_verdict = await generate(messages, persona, sources, lane="paid")  # Pip answers players: may overflow.
                 reply = (tidy_reply(raw, npc_name, settings.max_reply_chars) if raw is not None
                          else unsure_reply(verdict.category, hits))
             except LLMError as exc:

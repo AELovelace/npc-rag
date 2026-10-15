@@ -1,6 +1,53 @@
 # npc-rag: the LiDollQuest tutorial NPC
 
+Overflow-enabled comparison (2026-10-14): repeating the same scheduled-player workload
+with `--overflow enabled` passed at 25 and 50 active users. Generated median/p95 seconds:
+25 users 2.355/4.057; 50 users 4.493/9.055; 75 users 5.409/13.551. The 75-user stage
+failed only latency limits; 100 was skipped. All three ten-minute stages completed:
+3,000 messages, 2,936 generated replies, 60 source/content-guard replies, four quiet
+decisions, zero availability failures. Highest passing tested population was 50 with
+overflow versus 25 local-only, not an exact maximum or total gameplay capacity. Cloud
+requests were observed in health snapshots with no sampled cooldown; exact provider
+usage was not recorded. Both hosts finished idle/healthy, all eight classifiers had
+zero native failures, and all four generation endpoints answered health. Overflow remains
+enabled. See server `artifacts/overflow-player-capacity-20261014.json` and
+`artifacts/player-capacity-local-vs-overflow-20261014.json` for evidence and comparison limits.
+
+Local-only player test (2026-10-14): both hosts kept cloud overflow disabled throughout
+37 recorded health snapshots. At one message per player every 30s, 25 active users passed
+ten minutes: 500 messages, 483 generated replies, one availability fallback (0.2%),
+generated median/p95 2.441/4.340s and stable backlog. Fifty active users overloaded the
+pool: arrivals stopped around 362s, with 149 failures among 610 offered messages after
+draining; generated median/p95 was 6.030/19.289s. Stages 75/100 were skipped. All eight
+classifier workers finished healthy/idle with zero native failures, and all four
+generation endpoints answered health afterward. This establishes 25 as the highest
+passing tested active population for this workload, not an exact maximum or online-player
+limit. See server `artifacts/local-player-capacity-20261014.json` and its README for
+the scheduled arrivals, histories, nearby gate fanout, burst behavior and caveats.
+
+For a local-only capacity test, temporarily set `OPENAI_API_KEY=` in each RAG host's
+active `.env` and restart RAG; preserve the key privately for restoration afterward.
+Clear any process/service environment override as well, since it takes precedence over
+the file. `/health` must report `overflow.enabled: false` on **both** hosts. An empty key
+constructs only the local model client; no OpenAI client is created. The server checkout's
+`deploy/ai-player-test.mjs` verifies this before and throughout its scheduled-player test.
+See the server README for workload, pass criteria and command. Removing the key from the
+test runner's environment alone does not disable overflow on remote RAG workers.
+
 ## Decider Chat 0.1 upload and B-test deployment
+
+Live B completed (2026-10-14): both RAG hosts ran two routing and two participation
+workers each, all healthy and idle afterward with zero native failures. The standalone
+60% companion / 25% Pip / 15% gate simulation completed 719 requests, zero HTTP errors
+and zero availability fallbacks. At concurrency 1/2/4/8/16/24, generated-reply medians
+were 1.447/1.827/2.409/3.324/3.821/1.729 s. Participation gate medians were
+0.312/0.311/0.381/0.444/0.471/0.636 s; historical Qwen A was
+0.175/0.146/0.210/0.552/1.710/2.186 s. The gate improved under load; dialogue did not
+uniformly improve, and its 24-concurrency p95 was still 15.825 s. Random workload,
+cache state and enabled cloud overflow prevent a controlled model comparison. This
+checks load/stability, not participation accuracy or the updating live game server.
+See server `artifacts/decider-chat-0-1-simulated-b-20261014.json`, adjacent
+`-health-after.json`, and `decider-chat-0-1-simulated-ab-20261014.json`.
 
 Prepared Q4_K_M files are in `runs/releases/decider-chat-0-1-q4km/`:
 `decider-chat-0-1.gguf` (1,274,396,192 bytes) and `decider-chat-0-1-support.zip`
@@ -877,6 +924,28 @@ game server --POST /v1/npc/chat--> 9092 npc-rag --GAME or CHAT?--> 9091 Sakura c
 ```
 
 npc-rag needs no GPU. Embeddings use `BAAI/bge-small-en-v1.5` through fastembed (ONNX runtime, about 7 ms per message on CPU).
+
+## Ambient NPC lines are never billed (2026-10-14)
+
+The game's Ambient Life (`AMBIENT_NPC_LIFE_PLAN.md` in the game repo) sends new `/v1/companion/chat` kinds:
+- `ambient_open`, `ambient_reply` and `ambient_chime`: one NPC to another;
+- `ambient_greet` and `ambient_answer`: an NPC to a player;
+- `shop_beckon`: a shopkeeper to a passer-by.
+
+They use the resident prompt (`RESIDENT_STATIC`: someone who lives here, not a companion), plus optional `thread` lines (the conversation so far).
+
+**Cost guard**
+- **Only `PAID_KINDS` can overflow.** `PAID_KINDS` in `companion/prompts.py` is `chat`, `emote`, `reaction`, `musing` and `banter`: the companions' kinds. Only these may reach the paid model. Pip's `/v1/npc/chat` also keeps its overflow. Every other kind runs on the local model only, and any kind added later is local unless added to `PAID_KINDS` on purpose.
+- **Ambient kinds leave room for players.** They use `background()`, which needs more than `AMBIENT_LOCAL_RESERVE` free local slots (default 2, clamped below capacity). Otherwise the node answers **429 `local_busy`** at once, without queueing. The game server skips the line, and a 4xx never marks the node down.
+- **Every reply reports `lane`.** It is `local` or `cloud`. An ambient line that somehow came back `cloud` is logged as `COST GUARD` here and dropped by the game server.
+
+Optional `.env` setting:
+
+    AMBIENT_LOCAL_RESERVE=2
+
+Ambient replies also need the participation model on (`PARTICIPATION_ENABLED=true`). The game server uses it to decide who speaks. Without it, the game keeps ambient life silent.
+
+Tests: `tests/test_ambient_cost_guard.py`.
 
 ## Install on the AI server (Windows)
 

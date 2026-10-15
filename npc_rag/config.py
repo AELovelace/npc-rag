@@ -114,6 +114,7 @@ class Settings:
     companion_max_tokens: int = 100       # Generation cap for companions (replies are cut to 240 characters anyway).
     companion_note_k: int = 2             # Wiki notes a companion's game answer may use (Pip keeps RAG_TOP_K).
     companion_note_words: int = 120       # Each companion note is cut to this many words: prompt reading is most of a reply's time.
+    ambient_local_reserve: int = 2        # Local slots ambient NPC lines must leave free for players (AMBIENT_NPC_LIFE_PLAN.md).
     openai_api_key: str = field(default="", repr=False)  # Keep the provider secret out of Settings diagnostics.
     openai_model: str = "gpt-6-luna"       # Explicit requested API model; configurable for later evaluation.
     openai_local_capacity: int = 4        # Total active local generations on this RAG process before cloud overflow.
@@ -202,6 +203,7 @@ def load_settings(env_file: str | None = None) -> Settings:
         companion_max_tokens=_env_int("COMPANION_MAX_TOKENS", 100),
         companion_note_k=_env_int("COMPANION_NOTE_K", 2),
         companion_note_words=_env_int("COMPANION_NOTE_WORDS", 120),
+        ambient_local_reserve=_env_int("AMBIENT_LOCAL_RESERVE", 2),
         openai_api_key=_env("OPENAI_API_KEY", ""),
         openai_model=_env("OPENAI_MODEL", "gpt-6-luna"),
         openai_local_capacity=_positive_int("OPENAI_LOCAL_CAPACITY", 4),

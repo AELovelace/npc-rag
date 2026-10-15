@@ -2,7 +2,8 @@
 
 POST /v1/companion/lore   the game server pushes every companion's backstory (on boot, after edits, and on a 409)
 GET  /v1/companion/lore   which lore version this node holds
-POST /v1/companion/chat   one companion reply through the LangGraph pipeline (graph.py)
+POST /v1/companion/chat   one companion reply through the LangGraph pipeline (graph.py); ambient_* / shop_beckon kinds are
+                          resident NPC lines, local-only: 429 "local_busy" when local slots are kept for players
 POST /v1/companion/impressions   0-3 things the player said about themselves, after a chat (reflect.py)
 POST /v1/companion/summarize     fold old memories into the relationship summary (reflect.py)
 """
@@ -17,9 +18,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..common import api_key_guard
-from ..llm import LLMError
+from ..llm import LLMError, LocalBusy, track_lanes
 from ..prompts import clean_name
 from .graph import build_companion_graph
+from .prompts import AMBIENT_KINDS, PAID_KINDS
 from .lore import EmbedCache, LoreSection, LoreStore
 from .reflect import impressions_messages, parse_impressions, summary_messages, tidy_summary
 
@@ -50,6 +52,11 @@ class PartnerIn(BaseModel):
     line: str = Field(default="", max_length=300)               # What the partner just said (empty: start the exchange).
 
 
+class ThreadLine(BaseModel):
+    speaker: str = Field(min_length=1, max_length=64)
+    text: str = Field(min_length=1, max_length=300)
+
+
 class CompanionChatRequest(BaseModel):
     message: str = Field(min_length=1)
     npc_id: str = Field(min_length=1, max_length=64)          # followers-data.json key; selects the lore.
@@ -67,10 +74,12 @@ class CompanionChatRequest(BaseModel):
     gossip: list[GossipIn] = Field(default_factory=list, max_length=5)
     audience: int = Field(default=0, ge=0, le=500)          # Other players in earshot, not counting the speaker.
     slip: MemoryIn | None = None                              # Embarrassing memory the game server rolled to let slip.
-    kind: Literal["chat", "emote", "reaction", "musing", "banter"] = "chat"  # COMPANION_LIFELIKE_PLAN.md: who started this line.
+    kind: Literal["chat", "emote", "reaction", "musing", "banter", "ambient_open", "ambient_reply", "ambient_greet",
+                  "ambient_chime", "ambient_answer", "shop_beckon"] = "chat"  # COMPANION_LIFELIKE_PLAN.md / AMBIENT_NPC_LIFE_PLAN.md.
     situation: list[Annotated[str, Field(max_length=160)]] = Field(default_factory=list, max_length=10)  # Short word facts ("badly hurt").
     about: str = Field(default="", max_length=300)            # reaction: what just happened.
-    partner: PartnerIn | None = None                          # banter: the other companion.
+    partner: PartnerIn | None = None                          # banter / ambient: the character being spoken to.
+    thread: list[ThreadLine] = Field(default_factory=list, max_length=8)  # ambient: the conversation so far, oldest first.
 
 
 class ImpressionsRequest(BaseModel):
@@ -144,13 +153,19 @@ def companion_router(settings, state: dict, *, search, classify_with_search, gen
             raise HTTPException(409, "lore_version mismatch: push /v1/companion/lore first")  # The game server re-pushes and retries.
         t0 = time.perf_counter()
         npc_name, player_name = clean_name(req.npc_name, "Companion"), clean_name(req.player_name, "traveller")
+        lanes = track_lanes()  # Records a paid call anywhere below; ambient kinds can never make one.
         try:
             out = await graph().ainvoke({"req": req, "message": message, "history": _history(req.history, settings.session_turns),
                                          "npc_name": npc_name, "player_name": player_name, "timings": {}})
+        except LocalBusy:
+            raise HTTPException(429, "local_busy") from None  # 4xx: the game server skips this line without marking the node down.
         except LLMError as exc:
             log.warning("Companion model unavailable: %s", exc)
             raise HTTPException(503, "the reply model is unavailable on this node") from exc  # Lets the game server's pool try the other node.
         timings = {**out.get("timings", {}), "total": int((time.perf_counter() - t0) * 1000)}
+        lane = "cloud" if lanes.get("cloud") else "local"
+        if lane == "cloud" and req.kind not in PAID_KINDS:
+            log.error("COST GUARD: %s line for %s used the paid cloud", req.kind, req.npc_id)  # Must never happen; GM panel alarms too.
         lore_ids = [sec.id for sec, _ in out.get("lore", [])]
         log.info("companion %s %s/%s %s lore=%s mem=%d gossip=%s slip=%s %dms [%s]: %r", req.npc_id, out["category"], out["method"],
                  out["guard"], lore_ids, len(out.get("memories", [])), bool(out.get("gossip")), out.get("slipped"),
@@ -169,6 +184,7 @@ def companion_router(settings, state: dict, *, search, classify_with_search, gen
             "sources": [{"title": h["page_title"], "section": h["heading"], "url": h["url"]}
                         for h in out.get("notes", [])][:3] if out["guard"].startswith("passed") else [],
             "timings_ms": timings,
+            "lane": lane,
         }
 
     @router.post("/v1/companion/impressions")

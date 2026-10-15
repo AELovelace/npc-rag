@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from contextvars import ContextVar
 from urllib.parse import quote
 
 import httpx
@@ -13,6 +14,42 @@ _THINK = re.compile(r"<think>.*?</think>|^.*?</think>", re.S)  # Qwen-style reas
 
 class LLMError(RuntimeError):
     """llama.cpp was unreachable, timed out or answered with something unusable."""
+
+
+class LocalBusy(LLMError):
+    """Background work (ambient NPC lines) found too few free local slots; it is skipped, never queued or sent to the cloud."""
+
+
+# Which backends served the current request. The router sets a fresh dict per request; asyncio tasks copy the context but
+# share the dict, so a cloud call deep inside wait_for() still reaches the response ("lane": "cloud").
+LANES: ContextVar[dict | None] = ContextVar("npc_rag_lanes", default=None)
+
+
+def track_lanes() -> dict:
+    """Start recording for this request; returns the dict the backends fill ({"cloud": True} after any paid call)."""
+    lanes: dict = {}
+    LANES.set(lanes)
+    return lanes
+
+
+def _mark(lane: str) -> None:
+    lanes = LANES.get()
+    if lanes is not None:
+        lanes[lane] = True  # Recorded, never logged with prompts.
+
+
+def _keep(reserve: int, capacity: int) -> int:
+    """Free slots ambient work must leave untouched. Clamped below capacity so a 1-2 slot node can still run it when idle."""
+    return max(0, min(int(reserve), capacity - 1))
+
+
+async def background_chat(llm, messages: list[dict], *, reserve: int, **kwargs) -> str:
+    """Local-only generation that yields to players: refuses (LocalBusy) unless more than `reserve` local slots are free.
+    A client that can't report its free slots never runs background work."""
+    run = getattr(llm, "background", None)
+    if run is None:
+        raise LocalBusy("this model client cannot report free slots")
+    return await run(messages, reserve=reserve, **kwargs)
 
 
 class OpenAIClient:
@@ -31,6 +68,7 @@ class OpenAIClient:
         """Send the prepared prompt without llama.cpp-only options; never log keys, prompts or API error bodies."""
         body = {"model": self._model, "input": messages, "max_output_tokens": max(16, max_tokens),
                 "reasoning": {"effort": "none"}, "store": False, "stream": False}
+        _mark("cloud")  # Every paid call is visible in the reply's "lane", whatever path reached it.
         async def request():
             async with self._slots:
                 response = await self._client.post("/v1/responses", json=body, timeout=timeout)
@@ -109,6 +147,21 @@ class OverflowClient:
         except asyncio.TimeoutError:
             raise LLMError("Local model queue or generation timed out") from None
 
+    async def background(self, messages, *, reserve: int = 2, **kwargs):
+        """Ambient NPC lines: local only, and only while more than `reserve` local slots are free, so they can never push a
+        player's reply onto the paid cloud. Checked and acquired with no await in between (one event loop: atomic)."""
+        if self._local_slots.locked() or self._local_capacity - self._local_busy <= _keep(reserve, self._local_capacity):
+            raise LocalBusy("local slots are reserved for player replies")
+        await self._local_slots.acquire()  # Free, so this returns without suspending.
+        self._local_busy += 1
+        try:
+            return await asyncio.wait_for(self.local.chat(messages, **kwargs), timeout=kwargs["timeout"])
+        except asyncio.TimeoutError:
+            raise LLMError("Local model generation timed out") from None
+        finally:
+            self._local_busy -= 1
+            self._local_slots.release()
+
     async def reply(self, messages, **kwargs):
         """Choose at generation time; waiting and local failover share the caller's total deadline."""
         async def route():
@@ -159,6 +212,7 @@ class LlamaClient:
         self._client = httpx.AsyncClient(base_url=base_url, headers=headers, transport=transport)
         self._model = model
         self._slots = asyncio.Semaphore(max(1, concurrency))  # Never hold more llama.cpp slots than configured.
+        self.capacity, self.busy = max(1, concurrency), 0      # Slots and how many are held right now (background() reads them).
 
     async def chat(self, messages: list[dict], *, max_tokens: int, temperature: float, timeout: float,
                    grammar: str | None = None) -> str:
@@ -175,7 +229,11 @@ class LlamaClient:
             body["grammar"] = grammar  # Reply generation remains unconstrained unless explicitly requested.
         try:
             async with self._slots:
-                r = await self._client.post("/v1/chat/completions", json=body, timeout=timeout)
+                self.busy += 1
+                try:
+                    r = await self._client.post("/v1/chat/completions", json=body, timeout=timeout)
+                finally:
+                    self.busy -= 1
             r.raise_for_status()
             text = r.json()["choices"][0]["message"]["content"] or ""
         except (httpx.HTTPError, KeyError, IndexError, ValueError) as exc:
@@ -184,6 +242,12 @@ class LlamaClient:
         if not text:
             raise LLMError("llama.cpp returned an empty reply")
         return text
+
+    async def background(self, messages: list[dict], *, reserve: int = 2, **kwargs) -> str:
+        """Local-only ambient generation: refused unless more than `reserve` slots are free (no key = no cloud anyway)."""
+        if self.capacity - self.busy <= _keep(reserve, self.capacity):
+            raise LocalBusy("local slots are reserved for player replies")
+        return await self.chat(messages, **kwargs)  # chat() takes the free slot before its first real await.
 
     async def model_identity(self) -> str | None:
         """Read the advertised model ID so cached labels can be invalidated after a hot swap."""
@@ -230,6 +294,13 @@ class LlamaPool:
             finally:
                 self._busy[i] -= 1
         raise last or LLMError("no llama.cpp servers configured")
+
+    async def background(self, messages: list[dict], *, reserve: int = 2, **kwargs) -> str:
+        """Ambient generation across every copy: refused unless more than `reserve` slots are free in total."""
+        capacity = sum(c.capacity for c in self._clients)
+        if capacity - sum(c.busy for c in self._clients) <= _keep(reserve, capacity):
+            raise LocalBusy("local slots are reserved for player replies")
+        return await self.chat(messages, **kwargs)
 
     async def health(self) -> bool:
         return any(await asyncio.gather(*(c.health() for c in self._clients)))  # Up while any copy answers.
