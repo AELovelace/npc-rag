@@ -175,3 +175,11 @@ def test_openers_rotate_topics_and_never_resay_old_lines(settings, embedder, ind
     system = llama.requests[0]["messages"][0]["content"]
     assert "Bring this up this time: her old supplier" in system and old in system.split("never say any of these again")[1]
     assert body["guard"] == "repeated", "re-saying an old line, even from another conversation, is dropped"
+
+
+def test_residents_may_echo_a_few_words_of_what_they_answer():
+    """Live 2026-10-15 on node A: Felix's replies reusing "the rowdy drunks are getting" were dropped as copies."""
+    from npc_rag.companion.prompts import copied
+    wren = "Felix, sweetheart, the rowdy drunks are getting rowdier than usual tonight."
+    assert copied("The rowdy drunks are getting on my nerves too, Wren.", [], wren, partner_words=7) is None
+    assert copied("The rowdy drunks are getting rowdier than usual tonight, Wren.", [], wren, partner_words=7) == "what they just said"

@@ -104,6 +104,7 @@ AMBIENT_NPC_MODE = """
 {task}
 - One or two short sentences, in character, spoken to {partner}.
 - Say something new: never repeat anything you already said in this conversation, never repeat your example lines, and never copy what was just said.
+- Vary how you begin: don't always open with their name or a pet name.
 - Talk from your own life, wants and work, what was said, or what you notice. Never invent other game facts: no places, people, items or rules that aren't mentioned above."""
 
 SAID = "\nThings you have said lately (never say any of these again, or anything close to them):\n{items}\n"
@@ -291,14 +292,14 @@ def _grams(text: str, n: int) -> set[tuple[str, ...]]:
     return {tuple(w[i:i + n]) for i in range(len(w) - n + 1)}
 
 
-def copied(reply: str, voice: list[str], partner_line: str = "", thread: list[str] | None = None, voice_words: int = 7) -> str | None:
+def copied(reply: str, voice: list[str], partner_line: str = "", thread: list[str] | None = None, voice_words: int = 7, partner_words: int = 5) -> str | None:
     """What the reply copied, if anything: one of the companion's example lines (7 words in a row) or the banter
     partner's line (5 words in a row). Small models ignore "don't repeat" in the prompt (continuity test 2026-10-13:
     Rosalind answered a hug with her voice line, Sable parroted Wick), so the graph checks in code and retries once."""
     mine = _grams(reply, voice_words)
     if any(mine & _grams(line, voice_words) for line in voice):
         return "one of your example lines"
-    if partner_line and _grams(reply, 5) & _grams(partner_line, 5):
+    if partner_line and _grams(reply, partner_words) & _grams(partner_line, partner_words):
         return "what they just said"
     if any(_grams(reply, 7) & _grams(line, 7) for line in thread or []):
         return "what was already said"  # 7 words: 5 matched everyday phrases and silenced residents (2026-10-15).
