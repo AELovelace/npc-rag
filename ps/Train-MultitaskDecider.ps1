@@ -3,6 +3,8 @@ param(
     [switch]$SmokeTest,
     [switch]$CheckData,
     [int]$Epochs = 2,
+    [string]$ParticipationDataset = '',
+    [string]$ParticipationDevDataset = '',
     [string]$Output = ""
 )
 $ErrorActionPreference = 'Stop'
@@ -13,5 +15,7 @@ $MultitaskArgs = @((Join-Path $MultitaskRoot 'python\train_classifier.py'), '--t
 if ($SmokeTest) { $MultitaskArgs += '--smoke-test' }
 if ($CheckData) { $MultitaskArgs += '--check-data' }
 if ($Output) { $MultitaskArgs += @('--output', $Output) }
+if ($ParticipationDataset) { $MultitaskArgs += @('--participation-dataset', $ParticipationDataset) }
+if ($ParticipationDevDataset) { $MultitaskArgs += @('--participation-dev-dataset', $ParticipationDevDataset) }
 & $MultitaskPython @MultitaskArgs # Keep each argument separate so paths containing spaces are safe.
 if ($LASTEXITCODE -ne 0) { throw 'Multi-task training/check failed; see the error above.' }

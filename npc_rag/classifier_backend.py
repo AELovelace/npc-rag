@@ -193,6 +193,9 @@ def make_classifier(settings, *, client=None):
     if client is not None:
         return ChatClassifier(client, settings.classifier_timeout)
     if settings.classifier_backend == "decider":
+        from .multitask import is_multitask_source, make_multitask
+        if is_multitask_source(settings.decider_model):
+            return make_multitask(settings)  # One model allocation handles both trained questions.
         if settings.decider_gpu_layers != 0:
             from .decider_pool import DeciderPool
             return DeciderPool(settings)  # GPU mode detects cards at startup and isolates one context per process.

@@ -8,6 +8,17 @@ BUDGETS = {'routing': 384, 'participation': 768}
 POLICY = 'routing-participation-multitask-v1'
 
 
+def load_fixed_routing():
+    import json
+    from train_classifier import ROOT, LABELS
+    rows = []
+    for name in ('eval_messages.json', 'eval_mixed_messages.json'):
+        data = json.loads((ROOT / 'data' / name).read_text(encoding='utf-8'))
+        rows.extend({'task': 'routing', 'id': f'{name}/{label}/{index}', 'message': message, 'label': label}
+                    for label in LABELS for index, message in enumerate(data[label]))
+    return rows  # Read only known label arrays; descriptive _about metadata is not an evaluation example.
+
+
 def load_multitask(args):
     from train_classifier import ROOT, load_dataset, load_development, task_schema
     paths = {
@@ -32,11 +43,7 @@ def load_multitask(args):
         }
     # Detect a held-out utterance reused by the other task, including fixed routing evaluation.
     from build_classifier_seed import normalize
-    import json
-    held_out = set()
-    for name in ('eval_messages.json', 'eval_mixed_messages.json'):
-        fixed = json.loads((ROOT / 'data' / name).read_text(encoding='utf-8'))
-        held_out.update(normalize(message) for rows in fixed.values() for message in rows)
+    held_out = {normalize(row['message']) for row in load_fixed_routing()}
     for split, rows in combined.items():
         if split != 'train':
             held_out.update(normalize(row.get('message', row.get('state', {}).get('message', ''))) for row in rows)

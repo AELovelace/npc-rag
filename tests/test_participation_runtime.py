@@ -84,6 +84,7 @@ def test_native_argmax_and_invalid_probabilities(settings):
 
 
 def test_native_pool_and_cpu_worker_are_separate_from_routing(settings):
+    settings = replace(settings, participation_model='lidoll/decider-chat-0-1')  # Explicit legacy mode retains separate workers.
     pool = make_participation(replace(settings, decider_gpu_layers=-1))
     assert isinstance(pool, DeciderPool) and pool._result_factory is ParticipationDecision
     worker = make_participation(replace(settings, decider_gpu_layers=0))

@@ -1,0 +1,43 @@
+{
+  "task": "participation",
+  "total_rows": 1056,
+  "families": 264,
+  "splits": {
+    "train": 800,
+    "test": 112,
+    "validation": 72,
+    "development": 72
+  },
+  "sha256_utf8_lf": {
+    "synthetic-expanded-v2.jsonl": "5aac990a32d0b1738c1f3ed9f2e09179cfaa480f393702e7eace499c6203aead",
+    "development-v2.jsonl": "bcbdb495a1b2e2eef01112c020e7050c5fda1c17eee8b88044f9b0e57d0cc590"
+  },
+  "new_rows_by_split": {
+    "train": 640,
+    "development": 40,
+    "test": 80,
+    "validation": 40
+  },
+  "new_families_by_category": {
+    "expertise": 20,
+    "followup": 20,
+    "handoff": 20,
+    "farewell": 20,
+    "addressed": 20,
+    "invitation": 20,
+    "emote": 20,
+    "ooc": 20,
+    "quotation": 20,
+    "boundary": 20
+  },
+  "split_seed": 20261015,
+  "preserves_v1_rows_and_splits": true,
+  "review_status": "synthetic_draft",
+  "real_exported_decisions": 0,
+  "deployment_ready": false,
+  "limitations": [
+    "Paired contexts and NPC/companion variants are not independent conversations.",
+    "The v1 held-out patterns informed category coverage; v1 scores are regression diagnostics.",
+    "New synthetic holdouts share scenario categories with training and are not real-player validation."
+  ]
+}

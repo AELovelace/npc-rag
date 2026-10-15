@@ -1,6 +1,127 @@
 # npc-rag: the LiDollQuest tutorial NPC
 
+## Combined Decider v2 upload and shared workers
+
+The prepared runtime uses `lidoll/decider-multitask-v2` for GAME/CHAT and JOIN/QUIET
+through **one model per selected GPU**, with a shared admission queue. CPU mode uses
+one model and one native worker. Routing keeps its state-first 384-token prompt;
+participation keeps its schema-first 768-token prompt. Over-budget inputs fail rather
+than truncate. Confidence remains uncalibrated. Existing specialist aliases still work
+for rollback; HTTP classifier mode remains available.
+
+Upload these two files from `runs/releases/decider-multitask-v2-q4km/` to
+`https://lidoll.dev/gguf/`:
+
+- `decider-multitask-v2.gguf` (1,274,396,192 bytes, Q4_K_M)
+- `decider-multitask-v2-support.zip` (matching tokenizer, configs, license, provenance
+  and evaluation summary; approximately 3.9 MB)
+
+`SHA256SUMS.txt` contains both hashes. The BF16 intermediate is not an upload asset.
+The ZIP contains model support files; install the updated **npc-rag code** on both
+RAG servers as well. Deploy the prepared **Lidollquest-server participation validator**
+before switching RAG: the old validator only accepts the specialist's model identity.
+After uploading, set these values in each server's active `.env`
+(explicit old environment values override the new defaults):
+
+```dotenv
+CLASSIFIER_BACKEND=decider
+DECIDER_MODEL=lidoll/decider-multitask-v2
+DECIDER_GGUF_FILE=decider-multitask-v2.gguf
+PARTICIPATION_ENABLED=true
+PARTICIPATION_MODEL=shared
+PARTICIPATION_TIMEOUT=10
+```
+
+Keep each host's existing `DECIDER_GPU_LAYERS`, `DECIDER_GPU_DEVICES`, and
+`DECIDER_THREADS`, then restart RAG. Startup verifies/downloads the pinned model and
+support files into `data/models/decider-multitask-v2`; configs come from the checked-in
+`npc_rag/multitask_config`. For an offline install, extract the ZIP and place the GGUF
+in that same directory. Startup decodes both tasks before becoming ready. No new port
+or game-server endpoint is required; keep `QUEST_PARTICIPATION_BACKEND=decider`.
+
+On `/health`, `classification.shared_pool` and `participation.shared_pool` must be
+true. In GPU mode both sections list **the same worker PIDs**, with one per selected
+GPU; their capacity/busy/queued counts describe the same pool and should not be added
+together. An abandoned request retains its native slot until inference finishes, and
+a timed-out queued request never gets submitted. Participation shutdown does not free
+the routing model; the routing owner drains and closes the shared pool once.
+
+To roll back, set `DECIDER_MODEL=lidoll/decider0-1`,
+`DECIDER_GGUF_FILE=decider0-1.gguf`, and
+`PARTICIPATION_MODEL=lidoll/decider-chat-0-1`, then restart. That loads the previous
+two specialist pools again. Preparation does not upload assets or restart live hosts.
+
+Rebuild the support ZIP/pins with `python/package_multitask_release.py`. Run
+`tests/test_multitask_runtime.py` with the existing Decider/pool/participation/service
+tests for admission, cancellation, task identity, archive checks, and lifecycle checks.
+`python/check_multitask_serving.py` replays all 212 held-out decisions through the real
+shared CPU serving interfaces and writes `serving-check.json` beside the release.
+Verification on 2026-10-15: all 212 labels matched the offline evaluation, with one
+loaded model (routing 97/100, participation 106/112). The npc-rag suite passed 265 tests
+with 3 optional tests skipped; the server's 28 participation/companion/ambient checks
+passed. ZIP extraction/hash checks and cached offline installation passed. These local
+checks do not measure live GPU shared-pool latency under load.
+The earlier experiment notes below record the training/evaluation history; the shared
+runtime described here supersedes their statements that serving integration was pending.
+
 ## Combined Decider experiment (2026-10-15)
+
+Expanded v2 run: `runs/multitask-v2-first-pass-20261015` starts from the same original
+pinned base with **800 routing + 800 participation training rows**, equal task loss weights,
+two epochs and 200 optimizer steps. `python/build_participation_v2.py` adds 200 authored
+scenario families across expertise, follow-ups, conversation handoffs, farewells, direct
+address, invitations, OOC, quotations, silence/privacy boundaries and emotes. Each new
+family has paired JOIN/QUIET contexts in NPC and companion roles; the 800 new rows are
+related variants, not 800 independent conversations. There are no reviewed live exports
+in this dataset. All original v1 rows and splits remain unchanged.
+
+Participation splits are 800 train / 72 validation / 72 development / 112 test, with
+80 newly held-out test rows from 20 families. V1 tests are retained regression checks;
+the new synthetic cases still share broad categories with training. The manifest is
+`data/participation/manifest-v2.json`. Current data checks reject cross-task utterance
+overlap and conversation-family leakage. The full tokenization check found no truncation
+(largest training prompt: 215 tokens).
+
+V2 completed successfully: 200 steps in 2,666.24 seconds of training/final scoring,
+2.85 GiB peak PyTorch allocation. Development-based selection retained epoch 1 (both
+epochs tied on recall/accuracy; epoch 1 had lower development loss). Its adapter scored
+98/100 routing and 110/112 participation; the exported Q4_K_M scored 97/100 and 106/112.
+The completed same-data GGUF comparison improved participation from v1's 98/112 (87.5%)
+to 106/112 (94.6%), with unwanted interruptions falling from 10 to 2 and missed joins
+remaining at 4. On the 80 new participation cases alone, accuracy rose from 66/80 to
+74/80; both models retained 32/32 on the original cases. Synthetic routing improved
+96/100 to 97/100, and fixed raw routing improved 91/96 to 92/96. All v2 evaluated
+per-class gates passed. These are synthetic/offline results with uncalibrated confidence,
+not live shared-pool qualification. The report paths below contain the full decisions;
+production models remain unchanged.
+
+```powershell
+.venv/Scripts/python.exe python/build_participation_v2.py
+powershell -ExecutionPolicy Bypass -File ps/Train-MultitaskDecider.ps1 -ParticipationDataset data/participation/synthetic-expanded-v2.jsonl -ParticipationDevDataset data/participation/development-v2.jsonl -Output runs/multitask-v2-first-pass-20261015
+powershell -ExecutionPolicy Bypass -File ps/Finish-MultitaskDecider.ps1 -Run runs/multitask-v2-first-pass-20261015 -ExpandedParticipation -Name decider-multitask-v2 -BaselineRelease runs/releases/decider-multitask-v1-q4km
+```
+
+The finish workflow compares the routing specialist on its unchanged test set and the
+participation specialist only on the preserved v1 subset, after auditing original source
+hashes and unchanged rows/splits. It also exports/evaluates v2 and evaluates the **previous
+combined GGUF on the same expanded datasets**, writing `previous-model-on-current-data.json`
+inside the v2 run. Each GGUF report separates original and new participation test cases.
+Use fresh output paths for additional runs; nothing is deployed by this workflow.
+
+First run completed: `runs/multitask-v1-first-pass-20261015` selected epoch 2 after
+120 optimizer steps (1,530.72 seconds of training/final scoring; 2.82 GiB peak PyTorch
+allocation). On identical synthetic tests, the combined adapter scored routing **96/100**
+versus the specialist's **99/100**, and participation **32/32**, matching its specialist.
+Participation validation was **28/32** and development **30/32**, so the perfect small
+test set does not establish broad reliability. The local Q4_K_M export reproduced both
+synthetic test scores through one loaded model instance. Raw fixed routing scored
+**91/96** with five missed GAME questions (GAME recall 43/48, below the 90% gate).
+That raw score is not directly comparable to previous wiki-assisted routing reports.
+See `specialist-comparison.json` in the run and
+`runs/releases/decider-multitask-v1-q4km/quantized-multitask.json`. The experiment is
+complete but remains uncalibrated and not deployment-qualified; live models were not changed.
+The evaluator's initial metadata-as-example error was fixed before the successful rerun;
+the fixed routing loader now ignores `_about` and tests enforce exactly 96 labeled examples.
 
 `ps/Train-MultitaskDecider.ps1` trains one fresh QLoRA adapter on both GAME/CHAT and
 JOIN/QUIET, starting from the same pinned original Decider-2B base. It uses cached

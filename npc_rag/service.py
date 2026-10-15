@@ -106,8 +106,8 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
         state["llm"] = llm or make_reply_llm(settings)  # The same guarded pipelines support either local or overflow generation.
         state["classifier"] = make_classifier(settings, client=classifier_llm)
         from .participation import make_participation
-        state['participation'] = (participation_backend or make_participation(settings)) if settings.participation_enabled else None
         try:
+            state['participation'] = (participation_backend or make_participation(settings, classifier=state['classifier'])) if settings.participation_enabled else None
             await state["classifier"].start()  # Native model must load successfully before this service accepts traffic.
             if state['participation'] is not None:
                 await state['participation'].start()
@@ -115,7 +115,7 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
             state["persona"] = settings.persona_path.read_text(encoding="utf-8")
             yield
         finally:
-            if state['participation'] is not None:
+            if state.get('participation') is not None:
                 await state['participation'].aclose()
             await state["classifier"].aclose()
             await state["llm"].aclose()
@@ -202,8 +202,9 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
             decision = await asyncio.wait_for(backend.decide(validated), settings.participation_timeout)
         except (asyncio.TimeoutError, LLMError):
             raise HTTPException(503, 'participation model unavailable or busy') from None
+        metadata = backend.view()
         return {'decision': decision.label, 'join': decision.label == 'join', 'join_probability': decision.join_probability,
-                'policy': backend.view()['decision_policy'], 'model': 'lidoll/decider-chat-0-1',
+                'policy': metadata['decision_policy'], 'model': metadata.get('release') or metadata.get('model') or settings.participation_model,
                 'timings_ms': {'participation': round((time.perf_counter() - began) * 1000, 2)}}
 
     @app.post("/v1/search", dependencies=[guard])

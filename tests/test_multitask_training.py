@@ -18,6 +18,19 @@ def arguments(**changes):
                                       participation_dev_dataset=None), **changes))
 
 
+def test_fixed_routing_ignores_descriptive_metadata():
+    from multitask_data import load_fixed_routing
+    rows = load_fixed_routing()
+    assert len(rows) == 96
+    assert Counter(row['label'] for row in rows) == {'game': 48, 'general': 48}
+    assert len({row['id'] for row in rows}) == 96
+    for name in ('eval_messages.json', 'eval_mixed_messages.json'):
+        source = json.loads((ROOT / 'data' / name).read_text(encoding='utf-8'))
+        actual = [row['message'] for row in rows if row['id'].startswith(name + '/')]
+        assert actual == source['game'] + source['general']
+        assert all('/_about/' not in row['id'] for row in rows)
+
+
 def test_both_datasets_keep_holdouts_and_have_equal_loss_influence():
     splits, sources = load_multitask(arguments())
     assert {split: len(rows) for split, rows in splits.items()} == dict(train=960, validation=132, test=132, development=232)

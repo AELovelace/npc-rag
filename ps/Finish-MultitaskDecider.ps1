@@ -2,6 +2,9 @@
 param(
     [Parameter(Mandatory = $true)][string]$Run,
     [int]$WaitForProcessId = 0,
+    [switch]$ExpandedParticipation,
+    [string]$BaselineRelease = '',
+    [string]$BaselineGgufFile = 'decider-multitask-v1.gguf',
     [string]$Name = 'decider-multitask-v1',
     [string]$Release = ''
 )
@@ -33,7 +36,9 @@ try {
     $ExperimentCompletion = Get-Content -LiteralPath (Join-Path $ExperimentRun 'completion.json') -Raw | ConvertFrom-Json
     if (-not $ExperimentCompletion.completed -or $ExperimentCompletion.smoke_test) { throw 'A completed full training run is required.' }
     Write-ExperimentStatus 'comparing_specialists'
-    & $ExperimentPython python\compare_multitask_runs.py --run $ExperimentRun
+    $ExperimentCompareArgs = @('python\compare_multitask_runs.py', '--run', $ExperimentRun)
+    if ($ExpandedParticipation) { $ExperimentCompareArgs += '--allow-expanded-participation' }
+    & $ExperimentPython @ExperimentCompareArgs
     if ($LASTEXITCODE -ne 0) { throw 'Specialist comparison failed.' }
     Write-ExperimentStatus 'merging_adapter'
     & $ExperimentPython python\merge_classifier.py --task multitask --run $ExperimentRun --local-files-only
@@ -44,6 +49,11 @@ try {
     Write-ExperimentStatus 'evaluating_gguf'
     & $ExperimentPython python\evaluate_multitask.py --release $Release --gguf-file ($Name + '.gguf')
     if ($LASTEXITCODE -ne 0) { throw 'GGUF evaluation failed.' }
+    if ($BaselineRelease) {
+        Write-ExperimentStatus 'evaluating_previous_model_on_current_data'
+        & $ExperimentPython python\evaluate_multitask.py --release $BaselineRelease --gguf-file $BaselineGgufFile --dataset-run $ExperimentRun --output (Join-Path $ExperimentRun 'previous-model-on-current-data.json')
+        if ($LASTEXITCODE -ne 0) { throw 'Previous model comparison evaluation failed.' }
+    }
     Write-ExperimentStatus 'completed'
 } catch {
     Write-ExperimentStatus 'failed' $_.Exception.Message

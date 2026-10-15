@@ -1,0 +1,63 @@
+{
+  "name": "decider-multitask-v2",
+  "download_url": "https://lidoll.dev/gguf/decider-multitask-v2.gguf",
+  "support_url": "https://lidoll.dev/gguf/decider-multitask-v2-support.zip",
+  "files": {
+    "decider-multitask-v2.gguf": {
+      "bytes": 1274396192,
+      "sha256": "fa1d1e4eef9c51dbc81cba4accffb3e69b22ba63466b8ae88fe99e9f50a32066"
+    },
+    "tokenizer.json": {
+      "bytes": 19989325,
+      "sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523"
+    },
+    "tokenizer_config.json": {
+      "bytes": 1159,
+      "sha256": "bd549140011d8ca07845b132053c174d65354a955b6c313859eddc1b2f62ad07"
+    },
+    "chat_template.jinja": {
+      "bytes": 7908,
+      "sha256": "306abaf09cf3a6c0d14128373a72925bda3d7de2616a5642804d9768c7d2f78c"
+    },
+    "decider_config.json": {
+      "bytes": 1458,
+      "sha256": "d89a1c5e01edb7cbe6968bd2f636d8089d0cdf10c5f261ea390bfe3adbcf0388"
+    },
+    "routing_policy.json": {
+      "bytes": 3376,
+      "sha256": "16fcb9685c5a30ba56f0cc32f565357f7ce11c60e3a8f15560d00349916891c5"
+    },
+    "config.json": {
+      "bytes": 1865,
+      "sha256": "400ce31ab2aaacb864b02381a126bde705952a817e292467e12fbdd591f08e04"
+    },
+    "merge_provenance.json": {
+      "bytes": 295,
+      "sha256": "eede7e9131ef88b854489531da6b483f268af361996cd4a2f164a2628914813e"
+    },
+    "qualification.json": {
+      "bytes": 6101,
+      "sha256": "d3f2ec487446e966aa40c2a332795a2d748050340c1b224ee43f1c2bf0b58434"
+    },
+    "LICENSE.txt": {
+      "bytes": 11560,
+      "sha256": "3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5"
+    },
+    "NOTICE.txt": {
+      "bytes": 316,
+      "sha256": "9093f0ecc4a3bf00ab4dcc40a2ca1ca508ac9b3edf6db5b684bdcc512ee1f18b"
+    },
+    "HOSTING.txt": {
+      "bytes": 1172,
+      "sha256": "f565449fbe2074dd4636f9bb486d4b6bd4daa5e81a4060d2b6775ccdcc34d9e9"
+    },
+    "manifest.json": {
+      "bytes": 2767,
+      "sha256": "b51f2f479cab5c94f174d9eef27efbb1529dff7deba54654391f508024a6b866"
+    }
+  },
+  "support_archive": {
+    "bytes": 3927611,
+    "sha256": "835886fc0542b42f483afc75035f8a874be4a20f3b8a0e8332fe13946a27b445"
+  }
+}

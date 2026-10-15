@@ -129,7 +129,12 @@ def _worker(device):
     return ProcessWorker(device, operations=(_start, _decide, _stop))
 
 
-def make_participation(settings):
+def make_participation(settings, *, classifier=None):
+    from .multitask import MODEL as MULTITASK_MODEL, TaskView
+    if settings.participation_model in ('shared', MULTITASK_MODEL):
+        if not isinstance(classifier, TaskView) or classifier.task != 'routing':
+            raise ValueError('Shared participation requires CLASSIFIER_BACKEND=decider and a multitask DECIDER_MODEL')
+        return TaskView(classifier.backend, 'participation')  # Share admission, model memory and lifecycle with routing.
     if settings.decider_gpu_layers != 0:
         return DeciderPool(settings, worker_factory=_worker, result_factory=ParticipationDecision)
     return ParticipationClassifier(settings)  # GPU mode reuses the existing one-worker-per-card admission/lifetime logic.
