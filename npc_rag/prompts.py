@@ -72,6 +72,7 @@ def tidy_reply(text: str, npc_name: str, max_chars: int) -> str:
     """Plain single-paragraph text that fits the dialogue box, cut at a sentence end when possible."""
     for pattern, repl in _MD:
         text = pattern.sub(repl, text)
+    text = re.sub(r"</?think>", " ", text, flags=re.I)  # A stray reasoning tag (live 2026-10-15: a reply began "</think> Oh, I've seen...").
     text = text.strip().strip('"').strip()
     text = re.sub(rf"^{re.escape(npc_name)}\s*:\s*", "", text, flags=re.I)  # Models sometimes prefix "Pip: ".
     if len(text) <= max_chars:
