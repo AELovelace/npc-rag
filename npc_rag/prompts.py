@@ -65,6 +65,9 @@ _MD = [
 ]
 
 
+_SENTENCE_END = re.compile(r"[.!?][\"')]*(?=\s|$)")  # ".", "!" or "?" (maybe closing a quote) before a space or the end.
+
+
 def tidy_reply(text: str, npc_name: str, max_chars: int) -> str:
     """Plain single-paragraph text that fits the dialogue box, cut at a sentence end when possible."""
     for pattern, repl in _MD:
@@ -74,8 +77,10 @@ def tidy_reply(text: str, npc_name: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
     cut = text[:max_chars]
-    end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
-    return cut[: end + 1] if end > max_chars // 3 else cut.rstrip() + "..."  # Prefer a whole sentence.
+    ends = [m.end() for m in _SENTENCE_END.finditer(cut)]  # Also a sentence closing a quote, or ending exactly at the cut.
+    if ends and ends[-1] > max_chars // 3:
+        return cut[: ends[-1]].rstrip()                     # Prefer a whole sentence.
+    return text[: max_chars - 3].rsplit(" ", 1)[0].rstrip(" ,;:-") + "..."  # Whole words, and the "..." still fits the limit.
 
 
 def fallback_reply(category: str, hits: list[dict]) -> str:

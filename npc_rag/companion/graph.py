@@ -178,7 +178,7 @@ def build_companion_graph(settings, state: dict, *, search, classify_with_search
         elif raw is None:
             reply, verdict = unsure_reply(s["category"], s["hits"]), s["guard"]
         else:
-            reply, verdict = tidy_reply(raw, s["npc_name"], settings.companion_max_reply_chars), s["guard"]
+            reply, verdict = tidy_reply(to_ascii(raw), s["npc_name"], settings.companion_max_reply_chars), s["guard"]  # ASCII first: "..." for an ellipsis can't push a tidied reply past the limit.
         reply = to_ascii(reply)                                   # GameMaker fonts often lack curly quotes and dashes.
         names = set(s["npc_name"].lower().split()) | set(s["player_name"].lower().split())
         slipped = bool(s.get("slip")) and verdict.startswith("passed") and mentions(reply, s["slip"]["text"], names, s["player_name"])
