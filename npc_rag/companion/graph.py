@@ -143,7 +143,8 @@ def build_companion_graph(settings, state: dict, *, search, classify_with_search
             lore=[sec for sec, _ in s["lore"]], summary=req.summary.strip(), memories=[m["text"] for m in s["memories"]],
             gossip=[s["gossip"]["text"]] if s["gossip"] else [], slip=slip["text"] if slip else None,
             kind=req.kind, situation=list(req.situation), about=req.about.strip(),
-            partner=req.partner.model_dump() if req.partner else None, thread=[t.model_dump() for t in req.thread])
+            partner=req.partner.model_dump() if req.partner else None, thread=[t.model_dump() for t in req.thread],
+            topic=req.topic.strip(), said=list(req.said))
         rules = rules_text(name=s["npc_name"], player=s["player_name"], persona=persona, audience=req.audience, kind=req.kind)
         return {"messages": messages, "rules": rules, "slip": slip}
 
@@ -157,13 +158,17 @@ def build_companion_graph(settings, state: dict, *, search, classify_with_search
         req = s["req"]
         lane = "paid" if req.kind in PAID_KINDS else "background"  # Cost guard: only PAID_KINDS may ever reach OpenAI.
         raw, verdict = await generate(s["messages"], s["rules"], sources, settings.companion_max_tokens, lane=lane)  # LLMError propagates: 503, the pool fails over.
-        thread = [t.text for t in req.thread]
-        what = copied(raw or "", list(req.voice), req.partner.line if req.partner else "", thread) if raw and verdict.startswith("passed") else None
+        resident = req.kind in AMBIENT_KINDS
+        thread = [t.text for t in req.thread] + list(req.said)  # Earlier conversations count as "already said" too.
+        check = lambda text: copied(text, list(req.voice), req.partner.line if req.partner else "", thread, 5 if resident else 7)  # Residents: 5 words of a voice line is a recital.
+        what = check(raw or "") if raw and verdict.startswith("passed") else None
         if what:  # One retry with the copy named; keep the first reply if the retry fails the guard.
             note = {**s["messages"][0], "content": s["messages"][0]["content"] + f"\nYour last reply repeated {what}. Say something new in your own words."}
             raw2, verdict2 = await generate([note, *s["messages"][1:]], s["rules"], sources, settings.companion_max_tokens, lane=lane)
-            if raw2 and verdict2.startswith("passed"):
+            if raw2 and verdict2.startswith("passed") and not (resident and check(raw2)):
                 raw, verdict = raw2, "passed_after_retry"
+            elif resident:
+                raw, verdict = None, "repeated"  # A resident that still repeats itself says nothing (the game server drops it).
         return {"raw": raw, "guard": verdict, "timings": {"generate": _ms(t0)}}
 
     async def finish(s: CompanionState) -> dict:

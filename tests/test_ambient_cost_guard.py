@@ -121,10 +121,57 @@ def test_resident_prompts_are_not_companion_prompts():
                             thread=[{"speaker": "Padma", "text": "The bazaar is at it again."}])
     system = opener[0]["content"]
     assert "lives and works in the world" in system and "companion character" not in system
-    assert "Felix is standing near you" in system and 'Padma: "The bazaar is at it again."' in system
+    assert "Felix is standing near you" in system
+    assert opener[1] == {"role": "user", "content": "Padma: The bazaar is at it again."}, "the thread arrives as real turns"
     assert "old summary" not in system and "a memory" not in system and "a slip" not in system  # Companion memory stays out.
     assert opener[-1]["content"] == "(Start talking to them.)"
     beckon = build_messages(**common, kind="shop_beckon", about="Prudence's Diaper Stall sells: Night Guard, Pullups.")
     assert "Night Guard" in beckon[0]["content"] and beckon[-1]["content"] == "(Call out to them.)"
     answer = build_messages(**{**common, "message": "Wren, what's good tonight?"}, kind="ambient_answer")
-    assert answer[-1]["content"] == "Wren, what's good tonight?" and "Other players are close enough" in answer[0]["content"]
+    assert answer[-1]["content"] == "Doll: Wren, what's good tonight?" and "Other players are close enough" in answer[0]["content"]
+
+
+def test_resident_answers_see_their_own_lines_as_their_own_turns():
+    """Live 2026-10-14: Wren repeated one line three times while the thread sat in the system prompt as a list."""
+    thread = [{"speaker": "Wren", "text": "Another round, love?"}, {"speaker": "LiDoll", "text": "no thanks"},
+              {"speaker": "Wren", "text": "Ah, but you're still thirsty and hungry, are you not?"}]
+    msgs = build_messages(name="Wren", player="LiDoll", persona=WREN["persona"], voice=[], audience=0, category="general",
+                          message="i just said im not", history=[], notes=[], lore=[], summary="", memories=[], gossip=[],
+                          slip=None, kind="ambient_answer", thread=thread)
+    assert [m["role"] for m in msgs] == ["system", "assistant", "user", "assistant", "user"]
+    assert msgs[1]["content"] == "Another round, love?" and msgs[2]["content"] == "LiDoll: no thanks"
+    assert msgs[-1]["content"] == "LiDoll: i just said im not"
+    assert "Believe what LiDoll tells you" in msgs[0]["content"] and "Never repeat anything you already said" in msgs[0]["content"]
+    reply = build_messages(name="Felix", player="", persona="", voice=[], audience=0, category="general", message="(ambient)",
+                           history=[], notes=[], lore=[], summary="", memories=[], gossip=[], slip=None, kind="ambient_reply",
+                           partner={"name": "Wren"}, thread=[{"speaker": "Wren", "text": "Felix, table by the window."}])
+    assert reply[-1]["content"] == "Wren: Felix, table by the window." and len(reply) == 2, "what the partner just said is the message"
+
+
+def test_a_resident_that_keeps_repeating_itself_says_nothing(settings, embedder, index, clf):
+    same = "Ah, but you're still thirsty and hungry, are you not? Let's see what we can do about that."
+    llama = FakeLlama(same)
+    with make_client(settings, embedder, index, llama, clf) as c:
+        body = c.post("/v1/companion/chat", json={**WREN, "message": "i just said im not", "kind": "ambient_answer",
+                      "thread": [{"speaker": "Wren", "text": same}, {"speaker": "Doll", "text": "im not hungry"}]}).json()
+    assert body["guard"] == "repeated", body
+    assert len(llama.requests) == 2, "one retry, then silence"
+
+
+def test_residents_may_not_recite_five_words_of_a_voice_line():
+    from npc_rag.companion.prompts import copied
+    voice = ["That's bazaar stock. Feel the tapes. Feel them. Now feel mine."]
+    said = "That's bazaar stock. Feel the tapes-crinkly, cheap, and definitely not what you need."
+    assert copied(said, voice, voice_words=5) and not copied(said, voice)
+
+
+def test_openers_rotate_topics_and_never_resay_old_lines(settings, embedder, index, clf):
+    """Live 2026-10-15: Wren and Felix said the same exchange every conversation."""
+    old = "Felix, love, the window table needs wiping before the temple bell."
+    llama = FakeLlama(old)
+    with make_client(settings, embedder, index, llama, clf) as c:
+        body = c.post("/v1/companion/chat", json={**WREN, "message": "(ambient)", "kind": "ambient_open", "partner": {"name": "Felix"},
+                      "topic": "her old supplier", "said": [old]}).json()
+    system = llama.requests[0]["messages"][0]["content"]
+    assert "Bring this up this time: her old supplier" in system and old in system.split("never say any of these again")[1]
+    assert body["guard"] == "repeated", "re-saying an old line, even from another conversation, is dropped"

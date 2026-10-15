@@ -97,15 +97,17 @@ About them: {partner_persona}
 - Good topics: ask {partner} something about their past, compare your stories, or remark on where you are right now.
 - Only use your own past, what {partner} said, and what you notice; never mention the players' private moments."""
 
-THREAD = "\nThe conversation so far (newest last):\n{items}\n"
 
 AMBIENT_NPC_MODE = """
 
 {partner} is standing near you. About them: {partner_persona}
-{thread}{task}
+{task}
 - One or two short sentences, in character, spoken to {partner}.
-- Say something new: never repeat your example lines, and never copy what was just said.
+- Say something new: never repeat anything you already said in this conversation, never repeat your example lines, and never copy what was just said.
 - Talk from your own life, wants and work, what was said, or what you notice. Never invent other game facts: no places, people, items or rules that aren't mentioned above."""
+
+SAID = "\nThings you have said lately (never say any of these again, or anything close to them):\n{items}\n"
+TOPIC = "\nBring this up this time: {topic}\n"
 
 AMBIENT_TASKS = {
     "ambient_open": "Start a conversation with {partner}: a remark, complaint, question or bit of gossip that fits who you are.",
@@ -116,13 +118,16 @@ AMBIENT_TASKS = {
 GREET_MODE = """
 
 {player}, a traveller, is passing close by.
-{thread}- Start a short conversation with {player}: greet them, remark on something you notice about them, or ask them something that fits who you are.
+- Start a short conversation with {player}: greet them, remark on something you notice about them, or ask them something that fits who you are.
 - One or two short sentences, in character. Never invent other game facts."""
 
 ANSWER_MODE = """
 
-{player}, a traveller, just said something to you.
-{thread}- Answer {player} as {name}: one or two short sentences, in character.
+{player}, a traveller, is talking with you. Their newest words are the last message.
+- Answer exactly what {player} just said, as {name}: one or two short sentences, in character.
+- Believe what {player} tells you about themselves. If they turn something down or correct you, accept it and move on; never offer it again.
+- Never repeat anything you already said in this conversation; say something new or change the subject.
+- What you notice about {player} is only a guess: it never outweighs their own words.
 - Talk from your own life, wants and work, what was said, or what you notice. Never invent other game facts: no places, people, items or rules that aren't mentioned above."""
 
 BECKON_MODE = """
@@ -153,17 +158,28 @@ def rules_text(*, name: str, player: str, persona: str, audience: int, voice: li
     return static_text(name=name, persona=persona, voice=[], kind=kind)
 
 
-def _thread(thread: list[dict] | None) -> str:
-    """An ambient conversation so far as quoted lines, or nothing."""
-    lines = [f'{t.get("speaker") or "Someone"}: "{t.get("text")}"' for t in (thread or []) if t.get("text")]
-    return THREAD.format(items=_bullets(lines)) if lines else ""
+def thread_turns(thread: list[dict] | None, name: str, kind: str, player: str, message: str) -> tuple[list[dict], str]:
+    """An ambient conversation as real chat turns: this character's own lines are assistant turns (so the model knows what
+    it already said and stops repeating it - live 2026-10-14 Wren said the same line three times when the thread sat in the
+    system prompt as a list), everyone else's are user turns with their name. Returns (turns, final user message)."""
+    rows = [t for t in (thread or []) if t.get("text")]
+    if kind in ("ambient_reply", "ambient_chime") and rows and rows[-1].get("speaker") != name:
+        last = rows.pop()                                       # What they just said is the message to answer.
+        final = f'{last.get("speaker") or "Someone"}: {last["text"]}'
+    elif kind == "ambient_answer":
+        final = f"{player}: {message}"
+    else:
+        final = CUES.get(kind, message)
+    turns = [{"role": "assistant", "content": t["text"]} if t.get("speaker") == name
+             else {"role": "user", "content": f'{t.get("speaker") or "Someone"}: {t["text"]}'} for t in rows]
+    return turns, final
 
 
 def build_messages(*, name: str, player: str, persona: str, voice: list[str], audience: int, category: str,
                    message: str, history: list[dict], notes: list[dict], lore: list, summary: str,
                    memories: list[str], gossip: list[str], slip: str | None, kind: str = "chat",
                    situation: list[str] | None = None, about: str = "", partner: dict | None = None,
-                   thread: list[dict] | None = None) -> list[dict]:
+                   thread: list[dict] | None = None, topic: str = "", said: list[str] | None = None) -> list[dict]:
     """Static block first (cacheable), then who is here, what the companion knows right now, and the mode."""
     parts: list[str] = []
     npc_to_npc = kind in ("banter", "ambient_open", "ambient_reply", "ambient_chime")  # Spoken to another character, not a player.
@@ -185,11 +201,11 @@ def build_messages(*, name: str, player: str, persona: str, voice: list[str], au
         p = partner or {}
         pname = p.get("name") or "a neighbour"
         mode = AMBIENT_NPC_MODE.format(partner=pname, partner_persona=p.get("persona") or "someone you know from around here.",
-                                       thread=_thread(thread), task=AMBIENT_TASKS[kind].format(partner=pname))
+                                       task=AMBIENT_TASKS[kind].format(partner=pname))
     elif kind == "ambient_greet":
-        mode = GREET_MODE.format(player=player, thread=_thread(thread))
+        mode = GREET_MODE.format(player=player)
     elif kind == "ambient_answer":
-        mode = ANSWER_MODE.format(player=player, name=name, thread=_thread(thread))
+        mode = ANSWER_MODE.format(player=player, name=name)
     elif kind == "shop_beckon":
         mode = BECKON_MODE.format(player=player, about=about or "")
     elif kind == "banter":
@@ -206,7 +222,15 @@ def build_messages(*, name: str, player: str, persona: str, voice: list[str], au
         mode = GAME_MODE.format(notes=format_notes(notes))
     else:
         mode = CHAT_MODE.format(name=name)
+    if kind in AMBIENT_KINDS:                                   # Residents meet the same people every day: vary the topic, never re-say old lines.
+        if said:
+            mode += SAID.format(items=_bullets([s for s in said if s]))
+        if topic and kind in ("ambient_open", "ambient_greet"):
+            mode += TOPIC.format(topic=topic)
     system = static_text(name=name, persona=persona, voice=voice, kind=kind) + "".join(parts) + mode
+    if kind in AMBIENT_KINDS:                                   # Residents: the conversation so far as real turns.
+        turns, final = thread_turns(thread, name, kind, player, message)
+        return [{"role": "system", "content": system}, *turns, {"role": "user", "content": final}]
     return [{"role": "system", "content": system}, *history, {"role": "user", "content": CUES.get(kind, message)}]
 
 
@@ -267,12 +291,12 @@ def _grams(text: str, n: int) -> set[tuple[str, ...]]:
     return {tuple(w[i:i + n]) for i in range(len(w) - n + 1)}
 
 
-def copied(reply: str, voice: list[str], partner_line: str = "", thread: list[str] | None = None) -> str | None:
+def copied(reply: str, voice: list[str], partner_line: str = "", thread: list[str] | None = None, voice_words: int = 7) -> str | None:
     """What the reply copied, if anything: one of the companion's example lines (7 words in a row) or the banter
     partner's line (5 words in a row). Small models ignore "don't repeat" in the prompt (continuity test 2026-10-13:
     Rosalind answered a hug with her voice line, Sable parroted Wick), so the graph checks in code and retries once."""
-    mine = _grams(reply, 7)
-    if any(mine & _grams(line, 7) for line in voice):
+    mine = _grams(reply, voice_words)
+    if any(mine & _grams(line, voice_words) for line in voice):
         return "one of your example lines"
     if partner_line and _grams(reply, 5) & _grams(partner_line, 5):
         return "what they just said"

@@ -80,6 +80,8 @@ class CompanionChatRequest(BaseModel):
     about: str = Field(default="", max_length=300)            # reaction: what just happened.
     partner: PartnerIn | None = None                          # banter / ambient: the character being spoken to.
     thread: list[ThreadLine] = Field(default_factory=list, max_length=8)  # ambient: the conversation so far, oldest first.
+    topic: str = Field(default="", max_length=160)            # ambient_open / ambient_greet: what to bring up this time (rotated by the game server).
+    said: list[Annotated[str, Field(max_length=300)]] = Field(default_factory=list, max_length=12)  # ambient: this character's recent lines from earlier conversations.
 
 
 class ImpressionsRequest(BaseModel):
