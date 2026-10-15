@@ -300,6 +300,6 @@ def copied(reply: str, voice: list[str], partner_line: str = "", thread: list[st
         return "one of your example lines"
     if partner_line and _grams(reply, 5) & _grams(partner_line, 5):
         return "what they just said"
-    if any(_grams(reply, 5) & _grams(line, 5) for line in thread or []):
-        return "what was already said"
+    if any(_grams(reply, 7) & _grams(line, 7) for line in thread or []):
+        return "what was already said"  # 7 words: 5 matched everyday phrases and silenced residents (2026-10-15).
     return None

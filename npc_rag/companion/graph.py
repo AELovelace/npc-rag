@@ -160,7 +160,7 @@ def build_companion_graph(settings, state: dict, *, search, classify_with_search
         raw, verdict = await generate(s["messages"], s["rules"], sources, settings.companion_max_tokens, lane=lane)  # LLMError propagates: 503, the pool fails over.
         resident = req.kind in AMBIENT_KINDS
         thread = [t.text for t in req.thread] + list(req.said)  # Earlier conversations count as "already said" too.
-        check = lambda text: copied(text, list(req.voice), req.partner.line if req.partner else "", thread, 5 if resident else 7)  # Residents: 5 words of a voice line is a recital.
+        check = lambda text: copied(text, list(req.voice), req.partner.line if req.partner else "", thread, 6 if resident else 7)  # Residents: 5 words of a voice line is a recital.
         what = check(raw or "") if raw and verdict.startswith("passed") else None
         if what:  # One retry with the copy named; keep the first reply if the retry fails the guard.
             note = {**s["messages"][0], "content": s["messages"][0]["content"] + f"\nYour last reply repeated {what}. Say something new in your own words."}
