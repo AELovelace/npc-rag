@@ -93,6 +93,12 @@ class KeepOrder:
 
 
 def encode_rows(rows, tokenizer, max_tokens, *, shuffle_options=False, seed=417, layout='state_first', task='routing'):
+    if task == 'multitask':
+        from multitask_data import TASKS, LAYOUTS, BUDGETS
+        return [dict(item, task=subtask) for subtask in TASKS
+                for item in encode_rows([row for row in rows if row['task'] == subtask], tokenizer,
+                                        BUDGETS[subtask], shuffle_options=shuffle_options, seed=seed,
+                                        layout=LAYOUTS[subtask], task=subtask)]
     rng = random.Random(seed) if shuffle_options else KeepOrder()
     labels = task_labels(task)
     encoded = []
@@ -141,6 +147,9 @@ def task_schema(task, layout):
 
 
 def report_rows(rows, *, task='routing'):
+    if task == 'multitask':
+        from multitask_data import report_multitask
+        return report_multitask(rows)
     by_class = {}
     for label in task_labels(task):
         subset = [r for r in rows if r["expected"] == label]
@@ -178,10 +187,16 @@ def evaluate(model, encoded, letters, dtype, *, task='routing'):
             target = torch.tensor(item["golds"], device="cuda")
             losses.append(F.cross_entropy(logits.float(), target).item())
             rows.append({"id": item["id"], "expected": item["expected"],
-                         "predicted": task_labels(task)[item["perms"][0][prediction]],
+                         "predicted": task_labels(item.get('task', task))[item["perms"][0][prediction]],
+                         "task": item.get('task', task),
                          "probabilities_by_option_order": probs, "logits": logits.float()[0].cpu().tolist()})
     result = report_rows(rows, task=task)
     result.update(loss=sum(losses) / len(losses), rows=rows)
+    if task == 'multitask':
+        for subtask, report in result['by_task'].items():
+            task_losses = [loss for row, loss in zip(rows, losses) if row['task'] == subtask]
+            report['loss'] = sum(task_losses) / len(task_losses)
+        result['loss'] = sum(report['loss'] for report in result['by_task'].values()) / len(result['by_task'])
     model.train()
     return result
 
@@ -222,8 +237,15 @@ def run(args, splits):
     if any(len(x) != 1 for x in letters_list) or letters_list[0] == letters_list[1]:
         raise ValueError("Expected distinct single-token A/B option letters")
     letters = torch.tensor([x[0] for x in letters_list], device="cuda", dtype=torch.long)
-    splits = {**splits, 'development': load_development(args.dev_dataset, splits, task=args.task)}
-    selected = {key: rows[:8] if args.smoke_test else rows for key, rows in splits.items()}
+    multitask = args.task == 'multitask'
+    if multitask:
+        from multitask_data import select_rows, loss_weights, POLICY
+        selected = select_rows(splits, args.smoke_test)
+        weights = loss_weights(selected['train'])
+    else:
+        splits = {**splits, 'development': load_development(args.dev_dataset, splits, task=args.task)}
+        selected = {key: rows[:8] if args.smoke_test else rows for key, rows in splits.items()}
+        weights = {args.task: 1.0}
     encoded = {key: encode_rows(rows, tokenizer, args.max_tokens, shuffle_options=key == "train", seed=args.seed, layout=args.prompt_layout, task=args.task)
                for key, rows in selected.items() if key != "test"}  # Test examples are not scored during checkpoint selection.
     model = AutoModelForCausalLM.from_pretrained(
@@ -241,14 +263,17 @@ def run(args, splits):
     trainable = [p for p in model.parameters() if p.requires_grad]
     if not trainable:
         raise RuntimeError("No adapter parameters are trainable")
-    metadata = {"model": args.model, "revision": revision, **task_schema(args.task, args.prompt_layout),
+    schema = {'task': 'multitask', 'policy': POLICY, 'tasks': args.task_sources} if multitask else task_schema(args.task, args.prompt_layout)
+    metadata = {"model": args.model, "revision": revision, **schema,
                 "prompt_layout": args.prompt_layout,
-                "dataset_sha256": hashlib.sha256(args.dataset.read_bytes()).hexdigest(),
-                "dataset": str(args.dataset), "seed": args.seed, "rank": args.rank,
-                "development_sha256": hashlib.sha256(args.dev_dataset.read_bytes()).hexdigest(),
+                "dataset_sha256": hashlib.sha256(args.dataset.read_bytes()).hexdigest() if not multitask else None,
+                "dataset": 'see tasks' if multitask else str(args.dataset), "seed": args.seed, "rank": args.rank,
+                "development_sha256": hashlib.sha256(args.dev_dataset.read_bytes()).hexdigest() if not multitask else None,
+                "loss_weights_by_task": weights,
                 "selection": "development worst-class recall, accuracy, negative loss",
                 "epochs": args.epochs, "learning_rate": args.learning_rate, "accumulation": args.accumulation,
-                "max_tokens": args.max_tokens, "smoke_test": args.smoke_test,
+                "max_tokens": {task: source['max_tokens'] for task, source in args.task_sources.items()} if multitask else args.max_tokens,
+                "smoke_test": args.smoke_test,
                 "gpu": torch.cuda.get_device_name(0), "trainable_parameters": sum(p.numel() for p in trainable),
                 "packages": {name: version(name) for name in ("torch", "transformers", "peft", "bitsandbytes", "decider-ai")},
                 "split_counts": {k: len(v) for k, v in selected.items()},
@@ -269,10 +294,14 @@ def run(args, splits):
     torch.cuda.reset_peak_memory_stats()
     started = time.perf_counter()
     for epoch in range(epochs):
-        augmented = augment_rows(selected['train'], args.seed + epoch) if args.task == 'routing' else selected['train']
-        if args.task == 'routing':
+        if multitask:
+            from multitask_data import augment_multitask
+            augmented, stats = augment_multitask(selected['train'], args.seed + epoch, args.smoke_test)
+        elif args.task == 'routing':
+            augmented = augment_rows(selected['train'], args.seed + epoch)
             stats = augmentation_stats(augmented) if not args.smoke_test else {'smoke_subset': True}
         else:
+            augmented = selected['train']
             stats = {'task': args.task, 'augmented': False}
         write_json(args.output / f'epoch-{epoch + 1}-augmentation.json', {'stats': stats, 'rows': augmented})
         items = encode_rows(augmented, tokenizer, args.max_tokens, shuffle_options=True, seed=args.seed + epoch, layout=args.prompt_layout, task=args.task)
@@ -290,7 +319,8 @@ def run(args, splits):
                     loss = F.cross_entropy(logits.float(), target)
                 if not torch.isfinite(loss):
                     raise RuntimeError("Non-finite training loss")
-                (loss / len(chunk)).backward()  # The final partial chunk has the same mean-loss scale.
+                weight = weights[item.get('task', args.task)]
+                (loss * weight / len(chunk)).backward()  # Equal total task influence despite 800 routing versus 160 participation rows.
                 loss_sum += loss.item()
             norm = torch.nn.utils.clip_grad_norm_(trainable, 1.0, error_if_nonfinite=True)
             if args.smoke_test and float(norm) == 0:
@@ -324,6 +354,10 @@ def run(args, splits):
                         'calibration_status': 'uncalibrated_after_finetuning', 'routing_policy': metadata['policy'],
                         'routing_prompt_order': args.prompt_layout, 'schema_first': args.prompt_layout == 'schema_first',
                         'schema_first_trained': args.prompt_layout == 'schema_first'})
+            if multitask:
+                from multitask_data import checkpoint_config
+                write_json(args.output / 'best-adapter' / 'decider_config.json',
+                           {**decision_config, 'temperature': 1.0, 'temperature_by_type': {}, **checkpoint_config()})
         write_json(args.output / "history.json", history)
     model.load_adapter(str(args.output / "best-adapter"), adapter_name="selected", is_trainable=False)
     model.set_adapter("selected")  # Verify the saved adapter can be reloaded before reporting completion.
@@ -350,9 +384,11 @@ def run(args, splits):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--task', choices=('routing', 'participation'), default='routing')
+    parser.add_argument('--task', choices=('routing', 'participation', 'multitask'), default='routing')
     parser.add_argument("--dataset", type=Path)
     parser.add_argument("--dev-dataset", type=Path)
+    parser.add_argument('--participation-dataset', type=Path, help='Participation source for multi-task runs')
+    parser.add_argument('--participation-dev-dataset', type=Path, help='Participation development source for multi-task runs')
     parser.add_argument("--output", type=Path)
     parser.add_argument("--model", default="Mapika/decider-2b")
     parser.add_argument("--revision", default=DEFAULT_REVISION)
@@ -368,17 +404,27 @@ def main():
     parser.add_argument("--smoke-test", action="store_true", help="two optimizer steps on eight training rows, with an eight-row validation check")
     parser.add_argument('--local-files-only', action='store_true', help='Use cached weights/tokenizer at an exact revision without network access')
     args = parser.parse_args()
+    if args.task == 'multitask':
+        if args.prompt_layout is not None or args.max_tokens is not None:
+            parser.error('Multi-task runs preserve each task layout and token budget; omit --prompt-layout/--max-tokens')
+        from multitask_data import load_multitask
+        splits, args.task_sources = load_multitask(args)
     participation = args.task == 'participation'
     args.dataset = args.dataset or ROOT / ('data/participation/synthetic-pilot-v1.jsonl' if participation else 'data/classifier/synthetic-pilot-v2.jsonl')
     args.dev_dataset = args.dev_dataset or ROOT / ('data/participation/development-v1.jsonl' if participation else 'data/classifier/realistic-dev-v2.jsonl')
-    args.output = args.output or ROOT / 'runs' / (('participation-' if participation else 'classifier-') + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
+    prefix = 'multitask-' if args.task == 'multitask' else ('participation-' if participation else 'classifier-')
+    args.output = args.output or ROOT / 'runs' / (prefix + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
     args.prompt_layout = args.prompt_layout or ('schema_first' if participation else 'state_first')
     if args.max_tokens is None:
         args.max_tokens = 768 if participation else 384  # Conversation context needs a measured, explicit larger budget.
     if args.epochs < 1 or args.rank < 1 or args.accumulation < 1 or args.max_tokens < 128 or not 0 < args.learning_rate < 1:
         parser.error("Invalid training hyperparameter")
-    splits = load_dataset(args.dataset, task=args.task)
-    development = load_development(args.dev_dataset, splits, task=args.task)
+    if args.task == 'multitask':
+        development = splits['development']
+        args.prompt_layout = 'per_task'
+    else:
+        splits = load_dataset(args.dataset, task=args.task)
+        development = load_development(args.dev_dataset, splits, task=args.task)
     print(json.dumps({"counts": {s: dict(Counter(r["label"] for r in rows)) for s, rows in splits.items()},
                       "development_rows": len(development),
                       "synthetic_draft_rows": sum(r.get("review_status") != "approved" for rows in splits.values() for r in rows)}, indent=2), flush=True)

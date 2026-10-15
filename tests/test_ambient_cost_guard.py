@@ -183,3 +183,15 @@ def test_residents_may_echo_a_few_words_of_what_they_answer():
     wren = "Felix, sweetheart, the rowdy drunks are getting rowdier than usual tonight."
     assert copied("The rowdy drunks are getting on my nerves too, Wren.", [], wren, partner_words=7) is None
     assert copied("The rowdy drunks are getting rowdier than usual tonight, Wren.", [], wren, partner_words=7) == "what they just said"
+
+
+def test_resident_lines_lose_speaker_labels_and_stage_directions(settings, embedder, index, clf):
+    """Live 2026-10-15 with LFM2.5-1.2B: Felix answered "Wren: Yeah..." and Wren "Wren (smiling softly): Oh, hey there"."""
+    llama = FakeLlama("Wren (smiling softly): Oh, hey there, Felix. Business is slow tonight.")
+    with make_client(settings, embedder, index, llama, clf) as c:
+        body = c.post("/v1/companion/chat", json={**WREN, "message": "(ambient)", "kind": "ambient_reply",
+                      "partner": {"name": "Felix", "line": "Hey Wren."}, "thread": [{"speaker": "Felix", "text": "Hey Wren."}]}).json()
+    assert body["reply"] == "Oh, hey there, Felix. Business is slow tonight."
+    from npc_rag.companion.prompts import strip_speaker_labels
+    assert strip_speaker_labels("Felix: Wren: hi there", ["Felix", "Wren"]) == "Hi there"
+    assert strip_speaker_labels("I told Wren: no more drinks.", ["Wren"]) == "I told Wren: no more drinks."

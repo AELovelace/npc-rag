@@ -292,6 +292,22 @@ def _grams(text: str, n: int) -> set[tuple[str, ...]]:
     return {tuple(w[i:i + n]) for i in range(len(w) - n + 1)}
 
 
+_STAGE = re.compile(r"\(\s*[a-z][^()]{0,48}\)")  # "(smiling softly)": a stage direction, never speech.
+
+
+def strip_speaker_labels(text: str, names: list[str]) -> str:
+    """Small models label their own line with a name - often the wrong one ("Wren: Yeah..." from Felix, live 2026-10-15
+    with LFM2.5-1.2B). A resident's line is always spoken as itself, so any leading "Name:" or "Name (doing something):"
+    for a name in this conversation is dropped, as are lowercase stage directions in parentheses."""
+    known = sorted({n.strip() for n in names if n and n.strip()}, key=len, reverse=True)
+    if known:
+        label = re.compile(r"^\s*(?:" + "|".join(re.escape(n) for n in known) + r")\b\s*(?:\([^()]{0,48}\))?\s*:\s*", re.I)
+        for _ in range(2):                                     # "Wren: Felix: ..." both go.
+            text = label.sub("", text)
+    text = " ".join(_STAGE.sub(" ", text).split())
+    return text[:1].upper() + text[1:]                          # A stripped label leaves the sentence starting in capitals.
+
+
 def copied(reply: str, voice: list[str], partner_line: str = "", thread: list[str] | None = None, voice_words: int = 7, partner_words: int = 5) -> str | None:
     """What the reply copied, if anything: one of the companion's example lines (7 words in a row) or the banter
     partner's line (5 words in a row). Small models ignore "don't repeat" in the prompt (continuity test 2026-10-13:

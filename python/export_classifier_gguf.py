@@ -27,13 +27,13 @@ def main():
     parser.add_argument('--run', type=Path, default=ROOT / 'runs/classifier-v3-first-pass')
     parser.add_argument('--output', type=Path, default=ROOT / 'runs/releases/decider0-1-q4km')
     parser.add_argument('--converter-root', type=Path, default=ROOT / 'runs/gguf-export-tools' / LLAMA_CPP_REVISION)
-    parser.add_argument('--task', choices=('routing', 'participation'), default='routing')
+    parser.add_argument('--task', choices=('routing', 'participation', 'multitask'), default='routing')
     parser.add_argument('--name', default='decider0-1')
     args = parser.parse_args()
     if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,63}', args.name):
         raise ValueError('Release name must contain lowercase letters, digits and hyphens only')
-    if args.task == 'participation' and args.name == 'decider0-1':
-        raise ValueError('Participation requires its own release name')
+    if args.task != 'routing' and args.name == 'decider0-1':
+        raise ValueError('Participation/multi-task export requires its own release name')
     from merge_classifier import validate_run
     metadata = json.loads((args.run / 'run.json').read_text())
     validate_run(metadata, json.loads((args.run / 'completion.json').read_text()), args.task)

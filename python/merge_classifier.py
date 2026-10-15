@@ -12,6 +12,18 @@ sys.path.insert(0, str(ROOT))
 
 def validate_run(metadata, completion, task):
     from train_classifier import task_schema
+    if task == 'multitask':
+        from multitask_data import POLICY, TASKS, LAYOUTS
+        if (metadata.get('task') != task or metadata.get('policy') != POLICY
+                or not completion['completed'] or completion['smoke_test']):
+            raise ValueError('Merge requires a completed full multi-task run')
+        if set(metadata.get('tasks', {})) != set(TASKS):
+            raise ValueError('Multi-task metadata must describe both tasks')
+        for subtask in TASKS:
+            expected = task_schema(subtask, LAYOUTS[subtask])
+            if any(metadata['tasks'][subtask].get(key) != value for key, value in expected.items()):
+                raise ValueError('Multi-task training schema does not match the selected task')
+        return {'task': task, 'policy': POLICY}  # Merge still requires explicit multi-task selection.
     expected = task_schema(task, metadata.get('prompt_layout', 'state_first'))
     if (metadata.get('task', 'routing') != task or metadata['policy'] != expected['policy']
             or not completion['completed'] or completion['smoke_test']):
@@ -25,7 +37,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run', type=Path, required=True)
     parser.add_argument('--output', type=Path)
-    parser.add_argument('--task', choices=('routing', 'participation'), default='routing')
+    parser.add_argument('--task', choices=('routing', 'participation', 'multitask'), default='routing')
     parser.add_argument('--local-files-only', action='store_true')
     args = parser.parse_args()
     output = args.output or args.run / 'merged'

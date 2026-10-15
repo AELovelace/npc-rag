@@ -1,5 +1,55 @@
 # npc-rag: the LiDollQuest tutorial NPC
 
+## Combined Decider experiment (2026-10-15)
+
+`ps/Train-MultitaskDecider.ps1` trains one fresh QLoRA adapter on both GAME/CHAT and
+JOIN/QUIET, starting from the same pinned original Decider-2B base. It uses cached
+weights only. Routing keeps its state-first prompt and 384-token budget; participation
+keeps its schema-first prompt and 768-token budget. The 800 routing and 160 participation
+training rows are shuffled together, with loss weights 0.6 and 3.0 respectively so each
+task has equal total influence. No evaluation rows are oversampled or used for training.
+Existing task-family checks also run, plus a cross-task check against held-out utterances.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ps/Train-MultitaskDecider.ps1 -CheckData
+powershell -ExecutionPolicy Bypass -File ps/Train-MultitaskDecider.ps1 -SmokeTest
+powershell -ExecutionPolicy Bypass -File ps/Train-MultitaskDecider.ps1 -Output runs/multitask-v1-first-pass-20261015
+.venv-train/Scripts/python.exe python/compare_multitask_runs.py --run runs/multitask-v1-first-pass-20261015
+```
+
+The smoke test covers eight rows **per task**, four optimizer steps, and matching
+saved/reloaded probabilities. The full run uses two epochs and 120 optimizer steps.
+Checkpoint selection considers the worst of all four development class recalls, then
+equal-task mean accuracy and loss. Reports contain `by_task` metrics, including unwanted
+interruptions and missed joins. The held-out synthetic test runs only after selection.
+`compare_multitask_runs.py` checks source hashes, policies, base revision and test IDs
+before comparing with the previous specialist runs. It reports regressions for each task.
+
+This is an experiment using existing synthetic data, with uncalibrated confidence.
+Training produces `best-adapter/`; it does not change the live model configuration.
+The distinct multi-task policy is deliberately rejected by existing single-task loaders.
+To produce and test a local experimental GGUF after a completed full run:
+
+```powershell
+.venv-train/Scripts/python.exe python/merge_classifier.py --task multitask --run runs/multitask-v1-first-pass-20261015 --local-files-only
+.venv-train/Scripts/python.exe python/export_classifier_gguf.py --task multitask --run runs/multitask-v1-first-pass-20261015 --name decider-multitask-v1 --output runs/releases/decider-multitask-v1-q4km
+.venv-train/Scripts/python.exe python/evaluate_multitask.py --release runs/releases/decider-multitask-v1-q4km
+```
+
+`ps/Finish-MultitaskDecider.ps1 -Run runs/multitask-v1-first-pass-20261015` performs that
+comparison/merge/export/evaluation sequence and records its stage in `experiment-status.json`.
+When training is already running in a background process, `-WaitForProcessId <pid>` waits
+for that process first (at most four hours). Each stage stops on errors, and existing
+merge/export directories are preserved. An accuracy regression is recorded as an experimental
+result; it does not prevent local export for inspection and never triggers deployment.
+
+The offline GGUF evaluator alternates both tasks through **one loaded model instance**,
+then runs the fixed routing messages without wiki evidence. This does not establish
+live shared-worker capacity or calibrated probabilities. Production still needs shared
+pool integration and real exported/reviewed participation decisions before qualification.
+Relevant checks: `.venv/Scripts/python.exe -m pytest tests/test_multitask_training.py
+tests/test_training_data.py tests/test_participation_training.py tests/test_training_report.py -q`.
+
 Overflow-enabled comparison (2026-10-14): repeating the same scheduled-player workload
 with `--overflow enabled` passed at 25 and 50 active users. Generated median/p95 seconds:
 25 users 2.355/4.057; 50 users 4.493/9.055; 75 users 5.409/13.551. The 75-user stage
