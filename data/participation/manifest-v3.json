@@ -1,0 +1,36 @@
+{
+  "task": "participation",
+  "total_rows": 1568,
+  "splits": {
+    "train": 1120,
+    "test": 176,
+    "validation": 136,
+    "development": 136
+  },
+  "new_rows_by_split": {
+    "train": 320,
+    "validation": 64,
+    "development": 64,
+    "test": 64
+  },
+  "new_families_by_split": {
+    "train": 40,
+    "validation": 8,
+    "development": 8,
+    "test": 8
+  },
+  "sha256_utf8_lf": {
+    "synthetic-expanded-v3.jsonl": "345de61bea3c505d4f280d37b0a75151f44c678482b2678f6277e4ed9d827943",
+    "development-v3.jsonl": "df2361664d91345cb8f79e812451910189dc131395a92b41bd23935fecf93cdc"
+  },
+  "preserves_v2_rows_and_splits": true,
+  "review_status": "synthetic_draft",
+  "real_exported_decisions": 0,
+  "purpose": "Hired/no-history implicit social address, bounded by explicit addressee and silence/quotation negatives",
+  "limitations": [
+    "Context variants within a family are correlated.",
+    "The reported live failure informed this targeted expansion.",
+    "New authored holdouts share context templates; they are not real-player validation.",
+    "Seeded ramp replay is a regression set only and is excluded from training."
+  ]
+}

@@ -1,11 +1,11 @@
 {
-  "name": "decider-multitask-v2",
-  "download_url": "https://lidoll.dev/gguf/decider-multitask-v2.gguf",
-  "support_url": "https://lidoll.dev/gguf/decider-multitask-v2-support.zip",
+  "name": "decider-multitask-v3",
+  "download_url": "https://lidoll.dev/gguf/decider-multitask-v3.gguf",
+  "support_url": "https://lidoll.dev/gguf/decider-multitask-v3-support.zip",
   "files": {
-    "decider-multitask-v2.gguf": {
+    "decider-multitask-v3.gguf": {
       "bytes": 1274396192,
-      "sha256": "fa1d1e4eef9c51dbc81cba4accffb3e69b22ba63466b8ae88fe99e9f50a32066"
+      "sha256": "2a627c997b146911a780f6a5d546f8c4c46b18dfcaa543fa86e2cf0a38ecb18f"
     },
     "tokenizer.json": {
       "bytes": 19989325,
@@ -24,20 +24,24 @@
       "sha256": "d89a1c5e01edb7cbe6968bd2f636d8089d0cdf10c5f261ea390bfe3adbcf0388"
     },
     "routing_policy.json": {
-      "bytes": 3376,
-      "sha256": "16fcb9685c5a30ba56f0cc32f565357f7ce11c60e3a8f15560d00349916891c5"
+      "bytes": 3394,
+      "sha256": "00e98e3ad3a495f5d720e61f6946d9aa57e20fdf6894eb61ea6b7cc2e316e17e"
     },
     "config.json": {
       "bytes": 1865,
       "sha256": "400ce31ab2aaacb864b02381a126bde705952a817e292467e12fbdd591f08e04"
     },
     "merge_provenance.json": {
-      "bytes": 295,
-      "sha256": "eede7e9131ef88b854489531da6b483f268af361996cd4a2f164a2628914813e"
+      "bytes": 298,
+      "sha256": "94aab18350509d02195e958a91eaca1f2bc1d1b51b58ac12304c473031036e69"
     },
     "qualification.json": {
-      "bytes": 6101,
-      "sha256": "d3f2ec487446e966aa40c2a332795a2d748050340c1b224ee43f1c2bf0b58434"
+      "bytes": 6438,
+      "sha256": "fe1a329d0ffbf479750cd00a21e3a742e20f00b9d92b5ea81d337e8ca91d4039"
+    },
+    "targeted-comparison.json": {
+      "bytes": 25798,
+      "sha256": "796cdbf6ab5411f75317dbde8ca293b9d67259084637a9bf79eafec8779b6258"
     },
     "LICENSE.txt": {
       "bytes": 11560,
@@ -45,19 +49,19 @@
     },
     "NOTICE.txt": {
       "bytes": 316,
-      "sha256": "9093f0ecc4a3bf00ab4dcc40a2ca1ca508ac9b3edf6db5b684bdcc512ee1f18b"
+      "sha256": "c1c9e7370e6071cd62601466e7546b66468722e86df6e1fe3e32805c7de4f4b2"
     },
     "HOSTING.txt": {
-      "bytes": 1172,
-      "sha256": "f565449fbe2074dd4636f9bb486d4b6bd4daa5e81a4060d2b6775ccdcc34d9e9"
+      "bytes": 1347,
+      "sha256": "9f440274d50e08d8932501f0c050adc7922b192b1424d74c0c712ef4e0501fc1"
     },
     "manifest.json": {
-      "bytes": 2767,
-      "sha256": "b51f2f479cab5c94f174d9eef27efbb1529dff7deba54654391f508024a6b866"
+      "bytes": 2920,
+      "sha256": "b9954df899f470ab31dfc941d57bd8603b3c7422f6bb0e06e9f19da94dc86bbf"
     }
   },
   "support_archive": {
-    "bytes": 3927611,
-    "sha256": "835886fc0542b42f483afc75035f8a874be4a20f3b8a0e8332fe13946a27b445"
+    "bytes": 3930623,
+    "sha256": "c1126b8d8ba7ebbf67dd80d461c512cba81e743b0e954f5fafea76071a6264df"
   }
 }

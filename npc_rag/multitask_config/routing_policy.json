@@ -37,15 +37,15 @@
       "task": "participation",
       "prompt_layout": "schema_first",
       "max_tokens": 768,
-      "dataset": "C:\\Scripts\\npc-rag\\data\\participation\\synthetic-expanded-v2.jsonl",
-      "dataset_sha256": "5aac990a32d0b1738c1f3ed9f2e09179cfaa480f393702e7eace499c6203aead",
-      "development": "C:\\Scripts\\npc-rag\\data\\participation\\development-v2.jsonl",
-      "development_sha256": "bcbdb495a1b2e2eef01112c020e7050c5fda1c17eee8b88044f9b0e57d0cc590",
+      "dataset": "C:\\Scripts\\npc-rag\\data\\participation\\synthetic-expanded-v3.jsonl",
+      "dataset_sha256": "345de61bea3c505d4f280d37b0a75151f44c678482b2678f6277e4ed9d827943",
+      "development": "C:\\Scripts\\npc-rag\\data\\participation\\development-v3.jsonl",
+      "development_sha256": "df2361664d91345cb8f79e812451910189dc131395a92b41bd23935fecf93cdc",
       "split_counts": {
-        "train": 800,
-        "test": 112,
-        "validation": 72,
-        "development": 72
+        "train": 1120,
+        "test": 176,
+        "validation": 136,
+        "development": 136
       }
     }
   },
@@ -56,8 +56,8 @@
   "rank": 8,
   "development_sha256": null,
   "loss_weights_by_task": {
-    "routing": 1.0,
-    "participation": 1.0
+    "routing": 1.2,
+    "participation": 0.8571428571428571
   },
   "selection": "development worst-class recall, accuracy, negative loss",
   "epochs": 2,
@@ -78,10 +78,10 @@
     "decider-ai": "1.9.0"
   },
   "split_counts": {
-    "train": 1600,
-    "test": 212,
-    "validation": 172,
-    "development": 272
+    "train": 1920,
+    "test": 276,
+    "validation": 236,
+    "development": 336
   },
   "calibrated_after_training": false,
   "deployment_ready": false

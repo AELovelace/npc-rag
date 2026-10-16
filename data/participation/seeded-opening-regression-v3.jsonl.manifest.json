@@ -1,0 +1,15 @@
+{
+  "source": "C:\\Scripts\\Lidollquest-server\\artifacts\\local-player-capacity-multitask-20261015.json",
+  "source_sha256": "16aae8c39ebd23363db113834a711d894753c3266b8d84f98c706e675404ba2b",
+  "harness_sha256": "210517a5035dc86a33dfa89ae7bd89baa9abb0566db6c5e870ca79c2da0664f6",
+  "catalog_sha256": "1bba3bcf1e2ccbcc4aa61f48cf4a08e087727f09bd23f81bb88f39a35cf09754",
+  "rows": 50,
+  "hired_social": 20,
+  "limitations": [
+    "Only provably empty-history inputs are reconstructed.",
+    "Saved per-candidate gate results lack candidate IDs; do not assign source scores to candidates.",
+    "Current checked-in catalog is used; original run did not record its hash.",
+    "No full-history contexts were fabricated.",
+    "Regression only: these messages are excluded from training."
+  ]
+}

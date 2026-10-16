@@ -17,6 +17,31 @@ from npc_rag.participation import make_participation, warmup_state
 from npc_rag.service import create_app
 
 
+@pytest.mark.parametrize('model', [MODEL, 'lidoll/decider-multitask-v2'])
+def test_managed_alias_uses_its_own_pins_configs_and_cache(model, monkeypatch, settings):
+    from npc_rag.multitask import RELEASES, ensure_multitask, is_multitask_source
+    captured = {}
+    def install(destination, **kwargs):
+        captured.update(kwargs)
+        return Path('fake-cache')
+    monkeypatch.setattr('npc_rag.multitask.ensure_custom_decider', install)
+    assert ensure_multitask(model=model) == Path('fake-cache')
+    assert is_multitask_source(model)
+    assert captured['model_name'] == model.split('/')[-1]
+    assert captured['gguf_file'] == model.split('/')[-1] + '.gguf'
+    assert captured['release_manifest'] == RELEASES[model][0]
+    assert captured['config_loader']() == repository_configs(model)
+    configured = replace(settings, classifier_backend='decider', decider_model=model,
+                         decider_gpu_layers=0, participation_model='shared')
+    routing = make_classifier(configured)
+    assert routing.view()['release'] == model
+    assert make_participation(configured, classifier=routing).backend is routing.backend
+    other = MODEL if model != MODEL else 'lidoll/decider-multitask-v2'
+    with pytest.raises(ValueError, match='must match'):
+        make_participation(replace(configured, participation_model=other), classifier=routing)
+    asyncio.run(routing.aclose())
+
+
 def test_checked_in_release_and_prompt_schemas_match():
     configs = repository_configs()
     pin = json.loads(RELEASE_MANIFEST.read_text())
@@ -29,10 +54,11 @@ def test_checked_in_release_and_prompt_schemas_match():
         validate_checkpoint(config, schema)
 
 
-def test_factories_share_one_backend_and_reject_wrong_routing(settings):
+@pytest.mark.parametrize('model', [MODEL, 'lidoll/decider-multitask-v2'])
+def test_factories_share_one_backend_and_reject_wrong_routing(settings, model):
     async def run():
         for layers in (0, -1):
-            configured = replace(settings, classifier_backend='decider', decider_model=MODEL,
+            configured = replace(settings, classifier_backend='decider', decider_model=model,
                                  participation_model='shared', decider_gpu_layers=layers)
             routing = make_classifier(configured)
             participation = make_participation(configured, classifier=routing)
@@ -124,8 +150,8 @@ def test_service_starts_and_closes_shared_model_once(settings, embedder, index, 
 
 def test_archive_contents_match_installer_pins(tmp_path, monkeypatch):
     from npc_rag.model_download import _unpack, _matches
-    release = Path(__file__).resolve().parents[1] / 'runs/releases/decider-multitask-v2-q4km'
-    archive = release / 'decider-multitask-v2-support.zip'
+    release = Path(__file__).resolve().parents[1] / 'runs/releases/decider-multitask-v3-q4km'
+    archive = release / 'decider-multitask-v3-support.zip'
     if not archive.is_file():
         pytest.skip('Local upload artifacts are not part of Git')
     pin = json.loads(RELEASE_MANIFEST.read_text())

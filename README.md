@@ -1,5 +1,75 @@
 # npc-rag: the LiDollQuest tutorial NPC
 
+## Authorized v3 rollout (2026-10-15)
+
+The user accepted the known opening miss and selected v3 for rollout with v2 rollback.
+The exported Q4_K_M comparison is routing 97/100 (unchanged), retained participation
+109/112 versus 106/112, new cases 63/64 versus 57/64, and reconstructed hired social
+openings 20/20 versus 3/20. One new keepsake-box opening still gets QUIET (7/8 pass).
+The failed behavior gate remains recorded; live shared-pool load testing is not claimed.
+
+Upload `decider-multitask-v3.gguf` and `decider-multitask-v3-support.zip` from
+`runs/releases/decider-multitask-v3-q4km/` to `https://lidoll.dev/gguf/`.
+Install the updated game-server participation validator first (it accepts v2 and v3),
+then the updated npc-rag code on every RAG host. Set:
+
+```dotenv
+CLASSIFIER_BACKEND=decider
+DECIDER_MODEL=lidoll/decider-multitask-v3
+DECIDER_GGUF_FILE=decider-multitask-v3.gguf
+PARTICIPATION_ENABLED=true
+PARTICIPATION_MODEL=shared
+```
+
+Keep existing GPU, worker, timeout and ambient-reserve settings. Restart RAG and check
+both tasks are healthy, report the v3 release and share worker PIDs. The managed loader
+pins v3 assets in its own cache; v2 keeps its original pins/configs and cache. Roll back
+with `DECIDER_MODEL=lidoll/decider-multitask-v2` and
+`DECIDER_GGUF_FILE=decider-multitask-v2.gguf`, retain `PARTICIPATION_MODEL=shared`, restart.
+Packaging authorization does not mean the assets have been uploaded or hosts restarted.
+
+Repackage with `python python/package_multitask_release.py --accept-known-opening-miss`.
+The historical v2 section below describes the previous release; use this section for v3.
+
+
+## Targeted hired-opening v3 experiment (2026-10-15)
+
+This candidate addresses the live v2 failure where a hired companion stays quiet on an
+opening social question with no conversation history. It preserves every v2 row/split
+and adds 40 authored training families (320 rows), plus 8 families each for validation,
+development and test (64 rows per split). Each family has four JOIN and four QUIET
+contexts: hired opening, hired/nonhired ongoing exchange and explicit address versus
+an unaddressed bystander, another addressee, quoted speech and requested silence.
+All new rows are synthetic drafts, not reviewed real-player exports. Family variants
+are correlated; fresh held-out wording still shares context templates with training.
+
+Participation has 1,120 train / 136 validation / 136 development / 176 test rows.
+Routing retains 800 training rows. The same original pinned base, rank-8 QLoRA,
+two epochs and equal aggregate task loss are retained (240 optimizer steps).
+`python/build_participation_v3.py` regenerates the dataset and
+`python/check_participation_v3.py` checks both task prompts and replay exclusion.
+The replay reconstructs 50 gate inputs from 25 provably empty-history events in the
+saved 100-player ramp; 20 hired/social inputs have the explicit JOIN expectation.
+The missing original quiet-analysis script and unsaved generated history are not
+replaced with invented dialogue. Catalog provenance limits are recorded in the
+replay manifest. Unlabelled bystander/game inputs are diagnostics, not accuracy golds.
+
+`ps/Train-MultitaskV3.ps1` runs training, specialist comparison, merge, Q4_K_M export,
+and v2/v3 evaluation on exactly the same expanded test cases. Then
+`python/report_multitask_v3.py` scores both exports on the frozen opening regression
+and writes `targeted-comparison.json` with retained v2, new v3, scenario, routing and
+boundary results. Behavior gates require successful hired openings, preserved ongoing
+conversations, no new boundary/bystander interruptions, and no aggregate regression
+on routing or retained participation tests. A failed gate stays visible; no automatic
+deployment or test-driven retraining occurs.
+
+Candidate paths: `runs/multitask-v3-hired-opening-20261015` and
+`runs/releases/decider-multitask-v3-q4km`. The separate pipeline status is
+`runs/multitask-v3-hired-opening-20261015-pipeline.json`; stdout/stderr logs share that
+run prefix. Existing live v2 settings, release pins and assets are not changed.
+
+
+
 ## Combined Decider v2 upload and shared workers
 
 The prepared runtime uses `lidoll/decider-multitask-v2` for GAME/CHAT and JOIN/QUIET

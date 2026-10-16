@@ -16,13 +16,18 @@ from .model_download import CONFIG_FILES, ensure_custom_decider
 from .participation_policy import (OPTIONS, QUESTION, build_participation_item,
                                    policy_for_layout)
 
-MODEL = 'lidoll/decider-multitask-v2'
-GGUF = 'decider-multitask-v2.gguf'
+MODEL = 'lidoll/decider-multitask-v3'
+GGUF = 'decider-multitask-v3.gguf'
 POLICY = 'routing-participation-multitask-v1'
 LAYOUTS = {'routing': 'state_first', 'participation': 'schema_first'}
 BUDGETS = {'routing': 384, 'participation': 768}
 CONFIG_DIRECTORY = Path(__file__).with_name('multitask_config')
 RELEASE_MANIFEST = Path(__file__).with_name('multitask_release.json')
+RELEASES = {
+    MODEL: (RELEASE_MANIFEST, CONFIG_DIRECTORY, GGUF),
+    'lidoll/decider-multitask-v2': (Path(__file__).with_name('multitask_v2_release.json'),
+                                  Path(__file__).with_name('multitask_v2_config'), 'decider-multitask-v2.gguf'),
+}  # Keep independent hashes/configs/cache directories so rollback needs only an environment change.
 
 
 def validate_checkpoint(config, schema):
@@ -44,8 +49,8 @@ def validate_checkpoint(config, schema):
     # Validate before allocation so a specialist or altered question cannot load accidentally.
 
 
-def repository_configs():
-    configs = {name: (CONFIG_DIRECTORY / name).read_bytes() for name in CONFIG_FILES}
+def repository_configs(model=MODEL):
+    configs = {name: (RELEASES[model][1] / name).read_bytes() for name in CONFIG_FILES}
     for name, content in configs.items():
         if name.endswith('.json'):
             json.loads(content)
@@ -53,9 +58,10 @@ def repository_configs():
     return configs  # Git owns the small configs; hosted model/tokenizer assets remain hash-pinned.
 
 
-def ensure_multitask(destination=None):
-    return ensure_custom_decider(destination, release_manifest=RELEASE_MANIFEST, config_loader=repository_configs,
-                                 gguf_file=GGUF, model_name='decider-multitask-v2')
+def ensure_multitask(destination=None, model=MODEL):
+    manifest, _, gguf = RELEASES[model]
+    return ensure_custom_decider(destination, release_manifest=manifest, config_loader=lambda: repository_configs(model),
+                                 gguf_file=gguf, model_name=model.split('/')[-1])
 
 
 class MultitaskClassifier(DeciderClassifier):
@@ -65,7 +71,8 @@ class MultitaskClassifier(DeciderClassifier):
         if self._model is not None:
             return
         source = self.settings.decider_model
-        folder = ensure_multitask() if source == MODEL else Path(source)
+        folder = ensure_multitask(model=source) if source in RELEASES else Path(source)
+        gguf = RELEASES[source][2] if source in RELEASES else self.settings.decider_gguf_file
         if not folder.is_absolute():
             folder = ROOT / folder
         validate_checkpoint(json.loads((folder / 'decider_config.json').read_text(encoding='utf-8')),
@@ -74,8 +81,8 @@ class MultitaskClassifier(DeciderClassifier):
         from decider.engine_gguf import GGUFEngine
         from .native_logging import install_native_error_logging
         install_native_error_logging(llama_cpp)
-        self._model_source, self._gguf_file = str(folder), GGUF
-        self._model = GGUFEngine(str(folder / GGUF), str(folder),
+        self._model_source, self._gguf_file = str(folder), gguf
+        self._model = GGUFEngine(str(folder / gguf), str(folder),
                                 n_gpu_layers=self.settings.decider_gpu_layers,
                                 n_threads=self.settings.decider_threads, n_ctx=self.settings.decider_context,
                                 n_seq_max=1, verbose=True)  # Both tasks reuse this exact allocation.
@@ -106,12 +113,12 @@ class MultitaskClassifier(DeciderClassifier):
         await self._native(self._warmup)
 
     def view(self):
-        return {**super().view(), 'release': MODEL, 'decision_policy': POLICY,
+        return {**super().view(), 'release': self.settings.decider_model, 'decision_policy': POLICY,
                 'prompt_layout': 'per_task', 'tasks': list(LAYOUTS), 'shared_pool': True,
                 'calibration': 'uncalibrated'}
 
     async def model_identity(self):
-        return ('decider', self._model_source, GGUF, POLICY) if await self.health() else None
+        return ('decider', self._model_source, self._gguf_file, POLICY) if await self.health() else None
 
     def _unload(self):
         engine, self._model = self._model, None
@@ -199,7 +206,7 @@ def make_multitask(settings):
 
 
 def is_multitask_source(source):
-    if source == MODEL:
+    if source in RELEASES:
         return True
     folder = Path(source)
     config = (folder if folder.is_absolute() else ROOT / folder) / 'decider_config.json'

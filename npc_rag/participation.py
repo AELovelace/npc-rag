@@ -130,8 +130,10 @@ def _worker(device):
 
 
 def make_participation(settings, *, classifier=None):
-    from .multitask import MODEL as MULTITASK_MODEL, TaskView
-    if settings.participation_model in ('shared', MULTITASK_MODEL):
+    from .multitask import RELEASES, TaskView
+    if settings.participation_model == 'shared' or settings.participation_model in RELEASES:
+        if settings.participation_model in RELEASES and settings.participation_model != settings.decider_model:
+            raise ValueError('Shared participation alias must match DECIDER_MODEL')
         if not isinstance(classifier, TaskView) or classifier.task != 'routing':
             raise ValueError('Shared participation requires CLASSIFIER_BACKEND=decider and a multitask DECIDER_MODEL')
         return TaskView(classifier.backend, 'participation')  # Share admission, model memory and lifecycle with routing.
