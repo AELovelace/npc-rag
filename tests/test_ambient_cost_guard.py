@@ -159,11 +159,11 @@ def test_resident_prompts_are_not_companion_prompts():
     assert "Felix is standing near you" in system
     assert opener[1] == {"role": "user", "content": "Padma: The bazaar is at it again."}, "the thread arrives as real turns"
     assert "old summary" not in system and "a memory" not in system and "a slip" not in system  # Companion memory stays out.
-    assert opener[-1]["content"] == "(Start talking to them.)"
+    assert opener[-1]["content"] == '{"responding_to":"Felix"}\n(Start talking to them.)', "an opener is spoken to the partner"
     beckon = build_messages(**common, kind="shop_beckon", about="Prudence's Diaper Stall sells: Night Guard, Pullups.")
-    assert "Night Guard" in beckon[0]["content"] and beckon[-1]["content"] == "(Call out to them.)"
+    assert "Night Guard" in beckon[0]["content"] and beckon[-1]["content"] == '{"responding_to":"Doll"}\n(Call out to them.)'
     answer = build_messages(**{**common, "message": "Wren, what's good tonight?"}, kind="ambient_answer")
-    assert answer[-1]["content"] == "Doll: Wren, what's good tonight?" and "Other players are close enough" in answer[0]["content"]
+    assert answer[-1]["content"] == '{"responding_to":"Doll"}\nDoll: Wren, what\'s good tonight?' and "Other players are close enough" in answer[0]["content"]
 
 
 def test_resident_answers_see_their_own_lines_as_their_own_turns():
@@ -175,12 +175,12 @@ def test_resident_answers_see_their_own_lines_as_their_own_turns():
                           slip=None, kind="ambient_answer", thread=thread)
     assert [m["role"] for m in msgs] == ["system", "assistant", "user", "assistant", "user"]
     assert msgs[1]["content"] == "Another round, love?" and msgs[2]["content"] == "LiDoll: no thanks"
-    assert msgs[-1]["content"] == "LiDoll: i just said im not"
+    assert msgs[-1]["content"] == '{"responding_to":"LiDoll"}\nLiDoll: i just said im not'
     assert "Believe what LiDoll tells you" in msgs[0]["content"] and "Never repeat anything you already said" in msgs[0]["content"]
     reply = build_messages(name="Felix", player="", persona="", voice=[], audience=0, category="general", message="(ambient)",
                            history=[], notes=[], lore=[], summary="", memories=[], gossip=[], slip=None, kind="ambient_reply",
                            partner={"name": "Wren"}, thread=[{"speaker": "Wren", "text": "Felix, table by the window."}])
-    assert reply[-1]["content"] == "Wren: Felix, table by the window." and len(reply) == 2, "what the partner just said is the message"
+    assert reply[-1]["content"] == '{"responding_to":"Wren"}\nWren: Felix, table by the window.' and len(reply) == 2, "what the partner just said is the message"
 
 
 def test_a_resident_that_keeps_repeating_itself_says_nothing(settings, embedder, index, clf):

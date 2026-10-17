@@ -2,6 +2,7 @@
 Ambient residents (GM-made NPCs with an AI persona, and shopkeepers calling out) use the RESIDENT block and the ambient_* / shop_beckon modes."""
 from __future__ import annotations
 
+import json
 import math
 import re
 
@@ -286,10 +287,48 @@ def build_messages(*, name: str, player: str, persona: str, voice: list[str], au
         if topic and kind in ("ambient_open", "ambient_greet"):
             mode += TOPIC.format(topic=topic)
     system = static_text(name=name, persona=persona, voice=voice, kind=kind, speaking_style=speaking_style) + "".join(parts) + mode
+    to = addressee(kind, player, partner, thread, name)          # Who this line answers, named right before the model speaks.
     if kind in AMBIENT_KINDS:                                   # Residents: the conversation so far as real turns.
         turns, final = thread_turns(thread, name, kind, player, message)
-        return [{"role": "system", "content": system}, *turns, {"role": "user", "content": final}]
-    return [{"role": "system", "content": system}, *history, {"role": "user", "content": CUES.get(kind, message)}]
+        return [{"role": "system", "content": system}, *turns, {"role": "user", "content": address(final, to)}]
+    return [{"role": "system", "content": system}, *labelled(history, player),
+            {"role": "user", "content": address(f"{player}: {message}" if kind == "chat" else CUES.get(kind, message), to)}]
+
+
+# The last user turn starts with who the companion is answering (trained in lidoll-fm-0.3, 2026-10-17): the player's name
+# sat only in the system prompt before, and the 1.2B model lost track of it ("no idea who they're talking to").
+RESPONDING_TO = '{{"responding_to":{to}}}'
+
+
+def addressee(kind: str, player: str, partner: dict | None, thread: list[dict] | None, name: str) -> str:
+    """The person this line is spoken to: the character who just spoke (ambient replies), the partner (NPC to NPC), else the player."""
+    if kind in ("ambient_reply", "ambient_chime"):
+        rows = [t for t in (thread or []) if t.get("text")]
+        if rows and rows[-1].get("speaker") != name:
+            return rows[-1].get("speaker") or "Someone"         # Same speaker thread_turns() puts in the final turn.
+    if kind == "banter":
+        return (partner or {}).get("name") or "a friend"        # BANTER_MODE's fallback name.
+    if kind in ("ambient_open", "ambient_reply", "ambient_chime"):
+        return (partner or {}).get("name") or "a neighbour"     # AMBIENT_NPC_MODE's fallback name.
+    return player
+
+
+def address(final: str, to: str) -> str:
+    """The final user turn: the responding_to marker on its own line, then what was said (or the cue)."""
+    return RESPONDING_TO.format(to=json.dumps(to, ensure_ascii=False)) + "\n" + final
+
+
+def labelled(history: list[dict], player: str) -> list[dict]:
+    """Earlier player turns carry the speaker's name, like ambient threads do; the companion's own turns stay bare."""
+    return [{**t, "content": f"{player}: {t['content']}"} if t.get("role") == "user" else t for t in history]
+
+
+_MARKER = re.compile(r'\{\s*"(?:responding_to|secret)"\s*:\s*"[^"]{0,80}"\s*\}\s*')
+
+
+def strip_markers(text: str) -> str:
+    """Prompt markers a small model might echo ({"responding_to":"Moss"}, {"secret":"open"}) never reach the player."""
+    return " ".join(_MARKER.sub(" ", text).split())
 
 
 # Words that make a line embarrassing. A slip only counts when the reply says one of these (by prefix), so "you slipped

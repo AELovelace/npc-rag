@@ -264,7 +264,9 @@ def test_kinds_change_the_mode_and_skip_the_classifier(loose, embedder, index, l
     assert clf.requests == [] and all(r["method"] == "kind" for r in (emote, react, muse, banter))
     assert "did something instead of speaking" in system_of(llama, 0)
     assert "What happened: We just beat the Ember Wyrm together." in system_of(llama, 1)
-    assert llama.requests[1]["messages"][-1]["content"] == "(React out loud.)"
+    assert llama.requests[1]["messages"][-1]["content"] == '{"responding_to":"Doll"}\n(React out loud.)'
+    assert llama.requests[0]["messages"][-1]["content"] == '{"responding_to":"Doll"}\n*Doll hugs Elowen*', "an emote already names its actor"
+    assert llama.requests[3]["messages"][-1]["content"] == '{"responding_to":"Wick"}\n(Speak to them.)', "banter answers the partner"
     assert "What you notice right now" in system_of(llama, 2) and "it is evening" in system_of(llama, 2)
     assert "say one short thing on your own" in system_of(llama, 2)
     banter_system = system_of(llama, 3)
@@ -368,3 +370,25 @@ def test_impressions_grammar_and_grounding():
     raw = '{"facts": [{"text": "Kit said they love peach tea", "importance": 2}, {"text": "Kit said they own a castle", "importance": 3}]}'
     assert [f["text"] for f in parse_impressions(raw, "Kit", message="I love peach tea")] == ["Kit said they love peach tea"]
     assert len(parse_impressions(raw, "Kit")) == 2  # Without the message (older callers) nothing is filtered.
+
+
+def test_the_final_turn_names_who_the_companion_answers(loose, embedder, index, clf):
+    """lidoll-fm-0.2 lost track of the player (2026-10-17): the name sat only in the system prompt. Now every player turn
+    carries the speaker and the last one starts with a responding_to marker; an echoed marker or self-label is stripped."""
+    llama = FakeLlama('{"responding_to":"Doll"} Elowen: Stay behind me, Doll.')
+    with make_client(loose, embedder, index, llama, clf) as c:
+        body = ask(c, message="are you ready?", history=[{"role": "player", "content": "hi Elowen"},
+                                                        {"role": "npc", "content": "Hello, Doll."}]).json()
+    msgs = llama.requests[-1]["messages"]
+    assert msgs[-1]["content"] == '{"responding_to":"Doll"}\nDoll: are you ready?'
+    assert [m["content"] for m in msgs[1:-1]] == ["Doll: hi Elowen", "Hello, Doll."], "player history is labelled, own lines are not"
+    assert body["reply"] == "Stay behind me, Doll."
+
+
+def test_responding_to_escapes_names_and_follows_the_last_speaker():
+    from npc_rag.companion.prompts import address, addressee, strip_markers
+    assert address("hi", 'Bo "Tiny" Lee') == '{"responding_to":"Bo \\"Tiny\\" Lee"}\nhi'
+    thread = [{"speaker": "Doll", "text": "evening!"}, {"speaker": "Wren", "text": "Felix, the window table."}]
+    assert addressee("ambient_reply", "Doll", {"name": "Wren"}, thread, "Felix") == "Wren"
+    assert addressee("ambient_answer", "Doll", {"name": "Wren"}, thread, "Felix") == "Doll"
+    assert strip_markers('{"secret":"open"} {"responding_to":"Kit"}Fine, Kit.') == "Fine, Kit."

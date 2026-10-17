@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 import time
 from typing import Annotated, Any, TypedDict
 
@@ -27,7 +28,7 @@ from langgraph.graph import END, START, StateGraph
 from ..classifier import GAME, GENERAL, Verdict
 from ..guard import select_hits, to_ascii
 from ..prompts import tidy_reply, unsure_reply
-from .prompts import AMBIENT_KINDS, PAID_KINDS, build_messages, copied, mentions, rules_text, strip_speaker_labels
+from .prompts import AMBIENT_KINDS, PAID_KINDS, build_messages, copied, mentions, rules_text, strip_markers, strip_speaker_labels
 
 FOLLOW_UP_WORDS = 5  # Same as Pip: a short follow-up is searched together with the previous question.
 
@@ -184,8 +185,11 @@ def build_companion_graph(settings, state: dict, *, search, classify_with_search
             reply, verdict = unsure_reply(s["category"], s["hits"]), s["guard"]
         else:
             req = s["req"]
+            raw = strip_markers(raw)                           # An echoed {"responding_to":...} or {"secret":...} marker.
             if req.kind in AMBIENT_KINDS:                      # Residents: drop "Name:" labels and stage directions small models add.
                 raw = strip_speaker_labels(raw, [s["npc_name"], s["player_name"], req.partner.name if req.partner else "", *(t.speaker for t in req.thread)])
+            else:                                              # Player turns now read "Moss: ...", so a companion may label its own line too.
+                raw = re.sub(r"^\s*(?:" + "|".join(re.escape(n) for n in {s["npc_name"], s["player_name"]} if n) + r")\s*:\s*", "", raw, flags=re.I)
             reply, verdict = tidy_reply(to_ascii(raw), s["npc_name"], settings.companion_max_reply_chars), s["guard"]  # ASCII first: "..." for an ellipsis can't push a tidied reply past the limit.
         reply = to_ascii(reply)                                   # GameMaker fonts often lack curly quotes and dashes.
         names = set(s["npc_name"].lower().split()) | set(s["player_name"].lower().split())
