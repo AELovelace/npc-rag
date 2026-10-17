@@ -29,14 +29,48 @@ Plain text only, no lists or headings."""
 
 _OBJECT = re.compile(r"\{.*\}", re.S)
 
+# Forces the impressions answer into {"facts":[{"text":"<player> said ...","importance":1-3}, ...]} with at most 3 facts.
+# A fine-tuned chat model drifts into prose here (lidoll-fm-0.2, 2026-10-17: "Kit said they love peach tea and..."), which
+# parses as "nothing personal" and silently stops companion memory from growing; the grammar makes any model emit valid JSON.
+IMPRESSIONS_GRAMMAR = r"""root ::= "{" ws "\"facts\"" ws ":" ws "[" ws facts? ws "]" ws "}"
+facts ::= fact (ws "," ws fact)? (ws "," ws fact)?
+fact ::= "{" ws "\"text\"" ws ":" ws "\"PLAYER said " char+ "\"" ws "," ws "\"importance\"" ws ":" ws [1-3] ws "}"
+char ::= [^"\\\n\r]
+ws ::= [ ]?
+"""
+_QUESTION = re.compile(r"(how|what|where|when|why|which|who|whether|if)\b", re.I)
+_FILLER = frozenset("said they them their there this that with have about what your yours just really very like been were will would "
+                    "could should when where which while from into over some much more than then also only want".split())
+
+
+def impressions_grammar(player: str) -> str:
+    """The impressions grammar with this player's name as the required prefix of every fact."""
+    name = "".join(ch for ch in player if ch.isalnum() or ch in " _-")[:32].strip() or "traveller"
+    return IMPRESSIONS_GRAMMAR.replace("PLAYER", name)
+
+
+def _stems(text: str, skip: set[str]) -> set[str]:
+    return {w[:4] for w in re.findall(r"[a-z']+", text.lower()) if len(w) >= 4 and w not in _FILLER and w not in skip}
+
+
+def grounded(fact: str, message: str, player: str) -> bool:
+    """A fact must share a real word (4-letter stem) with what the player said. Grammar-forced JSON means a weak model can
+    no longer answer "nothing personal" by drifting into prose, so it may invent a fact for a plain game question instead."""
+    skip = set(player.lower().split())
+    said = re.split(r"\bsaid:?\s+", fact, maxsplit=1, flags=re.I)[-1]
+    if _QUESTION.match(said):
+        return False                                       # "Moss said how to open your inventory": a question, not a fact.
+    return bool(_stems(fact, skip) & _stems(message, skip))
+
 
 def impressions_messages(*, npc: str, player: str, message: str, reply: str) -> list[dict]:
     return [{"role": "system", "content": IMPRESSIONS_PROMPT.format(npc=npc, player=player)},
             {"role": "user", "content": f"{player}: {message}\n{npc}: {reply}"}]
 
 
-def parse_impressions(text: str, player: str, limit: int = 3) -> list[dict]:
-    """Facts from the model's JSON; anything malformed counts as nothing, never as an error."""
+def parse_impressions(text: str, player: str, limit: int = 3, message: str | None = None) -> list[dict]:
+    """Facts from the model's JSON; anything malformed counts as nothing, never as an error. With `message`, facts that share
+    no word with what the player said are dropped (see grounded())."""
     match = _OBJECT.search(text or "")
     if not match:
         return []
@@ -53,6 +87,8 @@ def parse_impressions(text: str, player: str, limit: int = 3) -> list[dict]:
         line = to_ascii(" ".join(raw.split()))[:200]
         if len(line) < 8:
             continue
+        if message is not None and not grounded(line, message, player):
+            continue                                        # Invented: nothing the player said supports it.
         if not line.lower().startswith(prefix.lower()):
             line = f"{prefix}: {line}"[:200]              # Always framed as something the player said.
         try:

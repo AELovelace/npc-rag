@@ -24,7 +24,7 @@ from ..prompts import clean_name
 from .graph import build_companion_graph
 from .prompts import AMBIENT_KINDS, PAID_KINDS
 from .lore import EmbedCache, LoreSection, LoreStore
-from .reflect import impressions_messages, parse_impressions, summary_messages, tidy_summary
+from .reflect import impressions_messages, parse_impressions, summary_messages, tidy_summary, impressions_grammar
 
 log = logging.getLogger("npc_rag.companion")
 
@@ -198,10 +198,11 @@ def companion_router(settings, state: dict, *, search, classify_with_search, gen
         try:
             raw = await state["llm"].chat(impressions_messages(npc=npc, player=player, message=" ".join(req.message.split()),
                                                                reply=" ".join(req.reply.split())),
-                                          max_tokens=220, temperature=0.0, timeout=settings.llm_timeout)
+                                          max_tokens=220, temperature=0.0, timeout=settings.llm_timeout,
+                                          grammar=impressions_grammar(player))  # Valid JSON from any model (llama.cpp GBNF).
         except LLMError as exc:
             raise HTTPException(503, "the reply model is unavailable on this node") from exc  # The game server retries elsewhere later.
-        return {"facts": parse_impressions(raw, player)}
+        return {"facts": parse_impressions(raw, player, message=req.message)}
 
     @router.post("/v1/companion/summarize")
     async def summarize(req: SummarizeRequest):

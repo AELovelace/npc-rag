@@ -167,9 +167,9 @@ def test_impressions_are_framed_as_what_the_player_said(loose, embedder, index, 
         body = c.post("/v1/companion/impressions", json={"npc_name": "Elowen", "player_name": "Doll",
                                                          "message": "I love strawberry milk and I'm scared of the dark", "reply": "Noted."}).json()
         assert body["facts"] == [{"text": "Doll said she loves strawberry milk.", "importance": 2, "embarrassing": False},
-                                 {"text": "Doll said: she is afraid of the dark", "importance": 3, "embarrassing": False},
-                                 {"text": "Doll said hi there friend", "importance": 1, "embarrassing": False}]  # Capped at 3, clamped, always "Doll said".
+                                 {"text": "Doll said: she is afraid of the dark", "importance": 3, "embarrassing": False}]  # Clamped, always "Doll said"; ungrounded facts dropped.
         assert "Output JSON only" in llama.requests[0]["messages"][0]["content"] and llama.requests[0]["temperature"] == 0.0
+        assert '"\\"Doll said "' in llama.requests[0]["grammar"]  # Grammar-forced JSON with this player's prefix.
         assert c.post("/v1/companion/impressions", json={"npc_name": "Elowen", "player_name": "Doll", "message": "hi"}).json() == {"facts": []}
         assert c.post("/v1/companion/impressions", json={"npc_name": "Elowen", "player_name": "Doll", "message": "hi"}).status_code == 503
 
@@ -355,3 +355,16 @@ def test_banter_never_shares_a_players_unlocked_secret():
                             message="banter", history=[], notes=[], lore=[secret], summary="", memories=[], gossip=[], slip=None,
                             kind="banter", partner={"name": "Mira", "persona": "A peddler."}, locked=True)[0]["content"]
     assert "fled a battle" not in system and "secret" not in system
+
+
+def test_impressions_grammar_and_grounding():
+    """lidoll-fm-0.2 (2026-10-17) answered impressions in prose; the grammar forces JSON, and grounding drops what it invents."""
+    from npc_rag.companion.reflect import grounded, impressions_grammar, parse_impressions
+    g = impressions_grammar('Kit "the" Brave')
+    assert r'"\"Kit the Brave said "' in g and r'char ::= [^"\\\n\r]' in g  # Name sanitized; only quote, backslash, CR/LF banned (not the letter n).
+    assert grounded("Kit said they love peach tea", "I love peach tea", "Kit")
+    assert not grounded("Moss said how to open your inventory", "how do I open my inventory?", "Moss")  # A question, not a fact.
+    assert not grounded("Moss said they collect rare stamps", "how do I open my inventory?", "Moss")  # Invented.
+    raw = '{"facts": [{"text": "Kit said they love peach tea", "importance": 2}, {"text": "Kit said they own a castle", "importance": 3}]}'
+    assert [f["text"] for f in parse_impressions(raw, "Kit", message="I love peach tea")] == ["Kit said they love peach tea"]
+    assert len(parse_impressions(raw, "Kit")) == 2  # Without the message (older callers) nothing is filtered.
