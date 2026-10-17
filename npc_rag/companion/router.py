@@ -17,6 +17,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from ..speaking_style import SpeakingStyle
 from ..common import api_key_guard
 from ..llm import LLMError, LocalBusy, track_lanes
 from ..prompts import clean_name
@@ -63,6 +64,7 @@ class CompanionChatRequest(BaseModel):
     npc_name: str = Field(min_length=1, max_length=32)
     player_name: str | None = Field(default=None, max_length=64)
     persona: str = Field(default="", max_length=1500)
+    speaking_style: SpeakingStyle | None = None  # Optional selector; voice remains example dialogue.
     voice: list[str] = Field(default_factory=list, max_length=5)  # Example lines; imitated, never leak-checked.
     history: list[Turn] = Field(default_factory=list, max_length=20)
     category: Literal["game", "general", "chat"] | None = None

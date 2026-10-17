@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import re
 
+from ..speaking_style import SpeakingStyle, style_prompt
 from ..bm25 import tokenize
 from ..prompts import format_notes
 
@@ -147,16 +148,16 @@ def _bullets(lines: list[str]) -> str:
     return "\n".join(f"- {line}" for line in lines)
 
 
-def static_text(*, name: str, persona: str, voice: list[str], kind: str = "chat") -> str:
+def static_text(*, name: str, persona: str, voice: list[str], kind: str = "chat", speaking_style: SpeakingStyle | None = None) -> str:
     """The cacheable, never-changing start of a character's prompt. It is also what a reply must never recite."""
     block = RESIDENT_STATIC if kind in AMBIENT_KINDS else STATIC  # Residents are not companions.
-    return block.format(name=name, persona=persona.strip(), voice=VOICE.format(lines=_bullets(voice)) if voice else "")
+    return block.format(name=name, persona=persona.strip(), voice=(VOICE.format(lines=_bullets(voice)) if voice else "") + style_prompt(speaking_style))
 
 
-def rules_text(*, name: str, player: str, persona: str, audience: int, voice: list[str] | None = None, kind: str = "chat") -> str:
+def rules_text(*, name: str, player: str, persona: str, audience: int, voice: list[str] | None = None, kind: str = "chat", speaking_style: SpeakingStyle | None = None) -> str:
     """The text the leak guard checks replies against: the static block, the same for every player.
     Voice lines are left out on purpose: imitating them is the point, so copying one is not a leak."""
-    return static_text(name=name, persona=persona, voice=[], kind=kind)
+    return static_text(name=name, persona=persona, voice=[], kind=kind, speaking_style=speaking_style)
 
 
 def thread_turns(thread: list[dict] | None, name: str, kind: str, player: str, message: str) -> tuple[list[dict], str]:
@@ -180,7 +181,7 @@ def build_messages(*, name: str, player: str, persona: str, voice: list[str], au
                    message: str, history: list[dict], notes: list[dict], lore: list, summary: str,
                    memories: list[str], gossip: list[str], slip: str | None, kind: str = "chat",
                    situation: list[str] | None = None, about: str = "", partner: dict | None = None,
-                   thread: list[dict] | None = None, topic: str = "", said: list[str] | None = None) -> list[dict]:
+                   thread: list[dict] | None = None, topic: str = "", said: list[str] | None = None, speaking_style: SpeakingStyle | None = None) -> list[dict]:
     """Static block first (cacheable), then who is here, what the companion knows right now, and the mode."""
     parts: list[str] = []
     npc_to_npc = kind in ("banter", "ambient_open", "ambient_reply", "ambient_chime")  # Spoken to another character, not a player.
@@ -228,7 +229,7 @@ def build_messages(*, name: str, player: str, persona: str, voice: list[str], au
             mode += SAID.format(items=_bullets([s for s in said if s]))
         if topic and kind in ("ambient_open", "ambient_greet"):
             mode += TOPIC.format(topic=topic)
-    system = static_text(name=name, persona=persona, voice=voice, kind=kind) + "".join(parts) + mode
+    system = static_text(name=name, persona=persona, voice=voice, kind=kind, speaking_style=speaking_style) + "".join(parts) + mode
     if kind in AMBIENT_KINDS:                                   # Residents: the conversation so far as real turns.
         turns, final = thread_turns(thread, name, kind, player, message)
         return [{"role": "system", "content": system}, *turns, {"role": "user", "content": final}]

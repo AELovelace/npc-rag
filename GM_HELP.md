@@ -68,3 +68,7 @@ Screenshot captions are embedded alongside section text. The service returns mat
 - Each process allows two concurrent questions; the game proxy allows one in flight per staff account. Excess requests receive a retryable busy response; game-state transactions are never held open while waiting for AI.
 - Chat is kept only in tab memory; reload, New chat, account changes, or 30 minutes of inactivity clear it. Request contents are not logged by this service. Model-server logging is controlled separately.
 - Tests: `.\.venv\Scripts\python.exe -m pytest`. GM tests use a deterministic CPU embedder and fake model, without downloading anything or contacting production.
+
+## Written speaking-style override
+
+Use the optional top-level `speaking_style` request field: `normal`, `gentle`, or `baby_talk`. Leave it out to retain the NPC persona's voice. This supplies a compact JSON marker to the dialogue model and needs corresponding fine-tuning for reliable style control. Existing voice examples remain independent. In the game editor use NPC AI persona > Speaking style, or the desktop Companion tab > Online speaking style; save and export the selected configuration as usual.

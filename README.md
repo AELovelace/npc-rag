@@ -1391,3 +1391,9 @@ The game server must be able to reach this machine on port 9092: run `ps\Registe
 ## Separate GM handbook assistant
 
 The editor can open a staff chat window backed by a separate GM wiki index and service on port 9093. All questions are proxied by the game server, preserving the AI server's public-IP allowlist. See [GM_HELP.md](GM_HELP.md) for setup, service keys, firewall rules, screenshots, index refresh and tests. The player service on 9092 is unchanged.
+
+## Optional written speaking style
+
+Both `/v1/companion/chat` and `/v1/npc/chat` accept a top-level `speaking_style` field with `normal`, `gentle` or `baby_talk`. For example, add `"speaking_style":"baby_talk"` alongside the usual message, NPC identity and persona fields. Omission or null preserves existing persona behavior; an invalid value returns 422. The existing `voice` array still holds dialogue examples.
+
+The runtime serializes only a compact JSON control marker into the system prompt, not a long style instruction. Fine-tune the student with that same marker to teach reliable switching. The selector is not zero-token metadata or a speech-synthesis setting. Installing this code does not train a model or change existing runtime configuration.

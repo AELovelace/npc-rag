@@ -19,6 +19,7 @@ from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from .speaking_style import SpeakingStyle, style_prompt
 from .classifier import CLASSIFIER_REVISION, GAME, GENERAL, ModelDecisionCache, Verdict, classify
 from .classifier_backend import make_classifier
 from .common import Sessions, api_key_guard
@@ -47,6 +48,7 @@ class ChatRequest(BaseModel):
     player_name: str | None = Field(default=None, max_length=64)
     npc_name: str | None = Field(default=None, max_length=32)       # Overrides NPC_NAME for this call.
     history: list[Turn] | None = Field(default=None, max_length=20) # Caller-managed memory; replaces the built-in one.
+    speaking_style: SpeakingStyle | None = None  # Select dialogue tone without modifying the authored persona.
     persona: str | None = Field(default=None, max_length=1500)      # Overrides data/persona.md for this call (companions speak as themselves).
     category: Literal["game", "general", "chat"] | None = None      # Caller already classified the message: skip the 9091 step.
 
@@ -291,7 +293,7 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
         history = (_normalise_history(req.history, settings.session_turns) if req.history is not None
                    else sessions.get(req.player_id) if req.player_id else [])
 
-        persona_text = (req.persona or "").strip() or state["persona"]  # A caller persona replaces Pip's for this reply only.
+        persona_text = ((req.persona or "").strip() or state["persona"]) + style_prompt(req.speaking_style)  # A caller persona replaces Pip's for this reply only.
 
         # 1. Classify (the wiki fallback may already search; keep that result). A caller verdict skips the model.
         cache: dict = {}
