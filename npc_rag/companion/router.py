@@ -58,6 +58,14 @@ class ThreadLine(BaseModel):
     text: str = Field(min_length=1, max_length=300)
 
 
+class ResidentContext(BaseModel):
+    kind: Literal["npc", "player"]
+    name: str = Field(min_length=1, max_length=64)
+    relationship: str = Field(default="", max_length=400)
+    memories: list[Annotated[str, Field(max_length=400)]] = Field(default_factory=list, max_length=4)
+    gossip: list[Annotated[str, Field(max_length=400)]] = Field(default_factory=list, max_length=2)
+
+
 class CompanionChatRequest(BaseModel):
     message: str = Field(min_length=1)
     npc_id: str = Field(min_length=1, max_length=64)          # followers-data.json key; selects the lore.
@@ -84,6 +92,7 @@ class CompanionChatRequest(BaseModel):
     thread: list[ThreadLine] = Field(default_factory=list, max_length=8)  # ambient: the conversation so far, oldest first.
     topic: str = Field(default="", max_length=160)            # ambient_open / ambient_greet: what to bring up this time (rotated by the game server).
     said: list[Annotated[str, Field(max_length=300)]] = Field(default_factory=list, max_length=12)  # ambient: this character's recent lines from earlier conversations.
+    resident_context: ResidentContext | None = None  # Server-owned encounter recall; distinct from companion bond/lore memories.
 
 
 class ImpressionsRequest(BaseModel):

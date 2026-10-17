@@ -148,7 +148,8 @@ def build_companion_graph(settings, state: dict, *, search, classify_with_search
             gossip=[s["gossip"]["text"]] if s["gossip"] else [], slip=slip["text"] if slip else None,
             kind=req.kind, situation=list(req.situation), about=req.about.strip(),
             partner=req.partner.model_dump() if req.partner else None, thread=[t.model_dump() for t in req.thread],
-            topic=req.topic.strip(), said=list(req.said), speaking_style=req.speaking_style, locked=bool(s.get("locked")))
+            topic=req.topic.strip(), said=list(req.said), speaking_style=req.speaking_style, locked=bool(s.get("locked")),
+            resident_context=req.resident_context.model_dump() if req.resident_context else None)
         rules = rules_text(name=s["npc_name"], player=s["player_name"], persona=persona, audience=req.audience, kind=req.kind, speaking_style=req.speaking_style)
         return {"messages": messages, "rules": rules, "slip": slip}
 

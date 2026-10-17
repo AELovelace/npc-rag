@@ -20,6 +20,41 @@ WREN = {"npc_id": "utopia_wren", "npc_name": "Wren", "player_name": "Doll",
         "persona": "Wren is the tavernkeeper of Utopia: sociable, nosy and fiercely protective of Felix."}
 
 
+def test_resident_recall_and_gossip_are_attributed_and_scoped_to_the_current_partner():
+    from npc_rag.companion.prompts import resident_context_text
+    context = {"kind": "npc", "name": "Felix", "relationship": "Your trusted colleague.",
+               "memories": ["Felix said: I finished the shelf."], "gossip": ["Doll said: My hobby is painting."]}
+    prompt = resident_context_text(context, kind="ambient_reply", partner={"name": "Felix"}, player="", audience=2)
+    assert "trusted colleague" in prompt and "Felix said:" in prompt and "Doll said:" in prompt
+    assert "not an established fact" in prompt and "current conversation take priority" in prompt
+    assert resident_context_text(context, kind="ambient_reply", partner={"name": "Padma"}, player="", audience=0) == ""
+    player_context = {**context, "kind": "player", "name": "Doll"}
+    for kind, player, audience in [("ambient_answer", "Other", 0), ("ambient_answer", "Doll", 1),
+                                    ("shop_beckon", "Doll", 0), ("chat", "Doll", 0), ("ambient_open", "Doll", 0)]:
+        assert resident_context_text(player_context, kind=kind, partner={"name": "Felix"}, player=player, audience=audience) == ""
+    private = resident_context_text(player_context, kind="ambient_answer", partner=None, player="Doll", audience=0)
+    assert "Earlier encounters" in private and "painting" not in private and "trusted colleague" not in private
+
+
+def test_resident_memory_contract_is_bounded():
+    from pydantic import ValidationError
+    from npc_rag.companion.router import ResidentContext
+    for fields in [{"memories": ["x"] * 5}, {"gossip": ["x"] * 3}, {"memories": ["x" * 401]}, {"relationship": "x" * 401}]:
+        with pytest.raises(ValidationError):
+            ResidentContext(kind="npc", name="Felix", **fields)
+
+
+def test_resident_memory_reaches_local_generation(settings, embedder, index, clf):
+    llama = FakeLlama("That shelf looks good, Felix.")
+    with make_client(settings, embedder, index, llama, clf) as client:
+        response = client.post("/v1/companion/chat", json={**WREN, "message": "(ambient)", "kind": "ambient_open",
+            "partner": {"name": "Felix"}, "resident_context": {"kind": "npc", "name": "Felix", "relationship": "Your trusted colleague.",
+            "memories": ["Felix said: I finished the shelf."], "gossip": ["Doll said: My hobby is painting."]}})
+    assert response.status_code == 200 and response.json()["lane"] == "local"
+    system = llama.requests[0]["messages"][0]["content"]
+    assert "Your trusted colleague" in system and "Felix said:" in system and "Doll said:" in system
+
+
 @pytest.fixture
 def clf():
     fake = FakeLlama()
