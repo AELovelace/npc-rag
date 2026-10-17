@@ -106,6 +106,7 @@ class Settings:
     # ── Companions (/v1/companion/*) ──────────────────────────────────────
     companion_lore_k: int = 2             # Backstory sections shown per reply.
     companion_lore_min: float = 0.5       # Section relevance below which it stays out of the prompt.
+    companion_locked_min: float = 0.55    # A gated section must score this to add the {"secret":"locked"} marker (0.5 fired on 30% of everyday lines, 0.55 on 5%; 1,500 labelled questions 2026-10-16).
     companion_memory_k: int = 4           # Shared memories shown per reply.
     companion_memory_min: float = 0.45    # Memory relevance floor (bge-small scores unrelated text around 0.4).
     companion_gossip_min: float = 0.45    # Anonymous gossip relevance floor.
@@ -195,6 +196,7 @@ def load_settings(env_file: str | None = None) -> Settings:
         session_ttl=_env_int("SESSION_TTL", 1800),
         companion_lore_k=_env_int("COMPANION_LORE_K", 2),
         companion_lore_min=_env_float("COMPANION_LORE_MIN", 0.5),
+        companion_locked_min=_env_float("COMPANION_LOCKED_MIN", 0.55),
         companion_memory_k=_env_int("COMPANION_MEMORY_K", 4),
         companion_memory_min=_env_float("COMPANION_MEMORY_MIN", 0.45),
         companion_gossip_min=_env_float("COMPANION_GOSSIP_MIN", 0.45),

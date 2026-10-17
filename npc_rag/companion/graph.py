@@ -7,7 +7,8 @@
 classify  - caller verdict, else Sakura's classifier (9091) with the wiki score as backup (same as Pip)
 wiki      - game questions get the best wiki sections (same index and guard rules as Pip)
 embed     - one query vector for the message, shared by lore and memories
-lore      - this companion's unlocked backstory sections (bond + story-flag gates)
+lore      - this companion's unlocked backstory sections (bond + story-flag gates); a {"secret":"locked"} marker
+            when the message is about a section still behind its gate (never its text)
 memories  - rank the game server's candidate memories by meaning, importance and age; anonymous gossip
             only when no own memory fits; embarrassing memories stay out while others can hear (slips only)
 compose   - build the prompt; a slip candidate is added only when someone else is listening
@@ -49,6 +50,7 @@ class CompanionState(TypedDict, total=False):
     hits: list[dict]
     qv: Any                                   # Query vector (numpy row).
     lore: list                                # [(LoreSection, score)]
+    locked: bool                              # The message is about a section still behind its gate (marker only).
     memories: list[dict]                      # Chosen own memories: {id, text}.
     gossip: dict | None                       # Chosen anonymous gossip line: {id, text}.
     slip: dict | None                         # Slip candidate offered to the model: {id, text}.
@@ -103,7 +105,9 @@ def build_companion_graph(settings, state: dict, *, search, classify_with_search
         if store is None:
             return {"lore": []}
         found = store.search(req.npc_id, s["qv"], req.bond, set(req.flags), settings.companion_lore_k, settings.companion_lore_min)
-        return {"lore": found}
+        locked = req.kind in ("chat", "emote") and store.locked_match(
+            req.npc_id, s["qv"], req.bond, set(req.flags), settings.companion_locked_min) is not None  # Asked about a gated secret: deflect, don't deny.
+        return {"lore": found, "locked": locked}
 
     async def memories(s: CompanionState) -> dict:
         req, qv = s["req"], s["qv"]
@@ -144,7 +148,7 @@ def build_companion_graph(settings, state: dict, *, search, classify_with_search
             gossip=[s["gossip"]["text"]] if s["gossip"] else [], slip=slip["text"] if slip else None,
             kind=req.kind, situation=list(req.situation), about=req.about.strip(),
             partner=req.partner.model_dump() if req.partner else None, thread=[t.model_dump() for t in req.thread],
-            topic=req.topic.strip(), said=list(req.said), speaking_style=req.speaking_style)
+            topic=req.topic.strip(), said=list(req.said), speaking_style=req.speaking_style, locked=bool(s.get("locked")))
         rules = rules_text(name=s["npc_name"], player=s["player_name"], persona=persona, audience=req.audience, kind=req.kind, speaking_style=req.speaking_style)
         return {"messages": messages, "rules": rules, "slip": slip}
 

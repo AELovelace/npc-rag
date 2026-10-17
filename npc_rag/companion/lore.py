@@ -58,6 +58,17 @@ class LoreStore:
                         key=lambda p: p[1], reverse=True)
         return [(s, score) for s, score in ranked if score >= min_score][:k]
 
+    def locked_match(self, npc: str, qv: np.ndarray, bond: int, flags: set[str], min_score: float) -> LoreSection | None:
+        """The most relevant section still behind its gate, when the message is about it. Only a {"secret":"locked"} marker
+        reaches the prompt, never this section's heading or text: the companion knows there is something, not what it is."""
+        items = self.sections.get(npc) or []
+        if not items:
+            return None
+        scores = self.vectors[npc] @ qv
+        locked = [(items[i], float(scores[i])) for i in range(len(items)) if not items[i].unlocked(bond, flags)]
+        best = max(locked, key=lambda p: p[1], default=None)
+        return best[0] if best and best[1] >= min_score else None
+
 
 class EmbedCache:
     """LRU cache of passage vectors keyed by text hash: the same memories arrive with every chat."""

@@ -171,8 +171,8 @@ def companion_router(settings, state: dict, *, search, classify_with_search, gen
         if lane == "cloud" and req.kind not in PAID_KINDS:
             log.error("COST GUARD: %s line for %s used the paid cloud", req.kind, req.npc_id)  # Must never happen; GM panel alarms too.
         lore_ids = [sec.id for sec, _ in out.get("lore", [])]
-        log.info("companion %s %s/%s %s lore=%s mem=%d gossip=%s slip=%s %dms [%s]: %r", req.npc_id, out["category"], out["method"],
-                 out["guard"], lore_ids, len(out.get("memories", [])), bool(out.get("gossip")), out.get("slipped"),
+        log.info("companion %s %s/%s %s lore=%s locked=%s mem=%d gossip=%s slip=%s %dms [%s]: %r", req.npc_id, out["category"], out["method"],
+                 out["guard"], lore_ids, bool(out.get("locked")), len(out.get("memories", [])), bool(out.get("gossip")), out.get("slipped"),
                  timings["total"], out.get("scores", "-"), message[:80])  # Scores make model/wiki disagreements reviewable.
         return {
             "reply": out["reply"],
@@ -182,6 +182,7 @@ def companion_router(settings, state: dict, *, search, classify_with_search, gen
             "guard": out["guard"],
             "fallback": False,
             "lore": lore_ids,
+            "locked_secret": bool(out.get("locked")),  # A gated section matched the message; only a marker was in the prompt.
             "memories_offered": [m["id"] for m in out.get("memories", [])],
             "gossip": out["gossip"]["id"] if out.get("gossip") else None,
             "slip": {"memory_id": out["slip"]["id"]} if out.get("slipped") else None,

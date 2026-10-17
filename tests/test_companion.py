@@ -24,7 +24,7 @@ LORE = {"version": "v1", "sections": [
 
 @pytest.fixture
 def loose(settings):
-    return dataclasses.replace(settings, companion_lore_min=0.05, companion_memory_min=0.05, companion_gossip_min=0.05)
+    return dataclasses.replace(settings, companion_lore_min=0.05, companion_locked_min=0.05, companion_memory_min=0.05, companion_gossip_min=0.05)
 
 
 @pytest.fixture
@@ -320,3 +320,38 @@ def test_copied_lines_are_retried_once(loose, embedder, index, llama, clf):
                                                   "message": "*Doll hugs Rosalind*", "kind": "emote"}).json()
     assert body["reply"] == "Oh! A hug? Come here, dear, Matron hugs back." and body["guard"] == "passed_after_retry"
     assert "repeated one of your example lines" in llama.requests[1]["messages"][0]["content"]
+
+
+def test_open_secrets_are_tagged_and_locked_ones_leave_only_a_marker(loose, embedder, index, llama, clf):
+    with make_client(loose, embedder, index, llama, clf) as c:
+        c.post("/v1/companion/lore", json=LORE)
+        low = ask(c, message="tell me about your shield vow and the battle", bond=5).json()
+        system = system_of(llama, 0)
+        assert low["locked_secret"] is True and '{"secret":"locked"} Something you are not ready to tell Doll yet.' in system
+        assert "broke her shield vow" not in system and "The broken vow" not in system   # Neither the text nor the heading leaks.
+        assert "never say you have no past" in system                                       # The legend comes with the marker.
+        high = ask(c, message="tell me about your shield vow and the battle", bond=25).json()
+        system = system_of(llama, 1)
+        assert high["locked_secret"] is False and '- {"secret":"open"} The broken vow: Elowen once broke' in system
+        assert "- Monastery childhood: Elowen grew up" in system                          # Ungated lore stays untagged.
+
+
+def test_prompts_without_secrets_are_byte_identical_to_before():
+    from types import SimpleNamespace
+    from npc_rag.companion.prompts import LORE, build_messages
+    plain = SimpleNamespace(heading="Monastery childhood", text="Elowen grew up in the north.", reveal_bond=0, reveal_flag="")
+    args = dict(name="Elowen", player="Doll", persona="A shield-bearer.", voice=[], audience=0, category="general", message="hi",
+                history=[], notes=[], lore=[plain], summary="", memories=[], gossip=[], slip=None)
+    system = build_messages(**args)[0]["content"]
+    assert LORE.format(items="- Monastery childhood: Elowen grew up in the north.") in system and "secret" not in system
+    assert "secret" not in build_messages(**{**args, "lore": []})[0]["content"]
+
+
+def test_banter_never_shares_a_players_unlocked_secret():
+    from types import SimpleNamespace
+    from npc_rag.companion.prompts import build_messages
+    secret = SimpleNamespace(heading="The broken vow", text="Elowen once fled a battle.", reveal_bond=20, reveal_flag="")
+    system = build_messages(name="Elowen", player="", persona="A shield-bearer.", voice=[], audience=0, category="general",
+                            message="banter", history=[], notes=[], lore=[secret], summary="", memories=[], gossip=[], slip=None,
+                            kind="banter", partner={"name": "Mira", "persona": "A peddler."}, locked=True)[0]["content"]
+    assert "fled a battle" not in system and "secret" not in system

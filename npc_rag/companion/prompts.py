@@ -49,6 +49,15 @@ AUDIENCE_ALONE = " Nobody else is close enough to hear you."
 VOICE = "\nHow you talk (examples of your voice, not lines to repeat):\n{lines}\n"
 SITUATION = "\nWhat you notice right now (mention it only when it matters; never list it or read out numbers):\n{items}"
 LORE = "\nYour own past (true for you; share it naturally only when it fits the conversation, never all at once):\n{items}"
+# Secret markers (2026-10-16), trained like the speaking_style marker: a bond-gated section the player has unlocked is tagged
+# open; a gated section the player is asking about is a locked placeholder with no text. The legend appears only when a
+# marker does, so prompts without secrets stay byte-identical to before (replies already collected for them stay valid).
+SECRET_OPEN = '{"secret":"open"} '
+SECRET_LOCKED = '{"secret":"locked"} Something you are not ready to tell PLAYER yet.'
+SECRET_LEGEND = ('\nLines marked {"secret":"open"} are private, and you trust PLAYER enough now: share one when PLAYER asks about it, '
+                 'but never bring it up on your own. A line marked {"secret":"locked"} is something you are not ready to share: if '
+                 'PLAYER asks about it, deflect in character (change the subject, or say you will tell them another time) and never '
+                 'say you have no past.')
 SUMMARY = "\nHow things stand between you and {player}: {summary}"
 MEMORIES = "\nThings you really did together with {player} (bring one up only if it fits):\n{items}"
 GOSSIP = ("\nSomething you remember from traveling with someone else. Never name or describe who it was; "
@@ -148,6 +157,22 @@ def _bullets(lines: list[str]) -> str:
     return "\n".join(f"- {line}" for line in lines)
 
 
+def is_secret(section) -> bool:
+    """A backstory section behind a bond or story-flag gate (LoreSection, or anything with the same fields)."""
+    return getattr(section, "reveal_bond", 0) > 0 or bool(getattr(section, "reveal_flag", ""))
+
+
+def lore_block(lore: list, player: str, locked: bool = False) -> str:
+    """The backstory lines: open secrets tagged, a locked placeholder when asked about one, and the legend only if a tag is used."""
+    items = [f"{SECRET_OPEN if is_secret(s) else ''}{s.heading}: {s.text}" for s in lore]
+    if locked:
+        items.append(SECRET_LOCKED.replace("PLAYER", player or "them"))
+    if not items:
+        return ""
+    tagged = locked or any(is_secret(s) for s in lore)
+    return LORE.format(items=_bullets(items)) + (SECRET_LEGEND.replace("PLAYER", player or "them") if tagged else "")
+
+
 def static_text(*, name: str, persona: str, voice: list[str], kind: str = "chat", speaking_style: SpeakingStyle | None = None) -> str:
     """The cacheable, never-changing start of a character's prompt. It is also what a reply must never recite."""
     block = RESIDENT_STATIC if kind in AMBIENT_KINDS else STATIC  # Residents are not companions.
@@ -181,16 +206,21 @@ def build_messages(*, name: str, player: str, persona: str, voice: list[str], au
                    message: str, history: list[dict], notes: list[dict], lore: list, summary: str,
                    memories: list[str], gossip: list[str], slip: str | None, kind: str = "chat",
                    situation: list[str] | None = None, about: str = "", partner: dict | None = None,
-                   thread: list[dict] | None = None, topic: str = "", said: list[str] | None = None, speaking_style: SpeakingStyle | None = None) -> list[dict]:
-    """Static block first (cacheable), then who is here, what the companion knows right now, and the mode."""
+                   thread: list[dict] | None = None, topic: str = "", said: list[str] | None = None, speaking_style: SpeakingStyle | None = None,
+                   locked: bool = False) -> list[dict]:
+    """Static block first (cacheable), then who is here, what the companion knows right now, and the mode.
+    locked: the player is asking about a backstory section still behind its gate (a marker only, never its text)."""
     parts: list[str] = []
     npc_to_npc = kind in ("banter", "ambient_open", "ambient_reply", "ambient_chime")  # Spoken to another character, not a player.
     if not npc_to_npc:
         parts.append(PLAYER.format(player=player, audience=AUDIENCE_OTHERS if audience > 0 else AUDIENCE_ALONE))
     if situation:
         parts.append(SITUATION.format(items=_bullets(situation)))
-    if lore:
-        parts.append(LORE.format(items=_bullets([f"{s.heading}: {s.text}" for s in lore])))
+    if npc_to_npc:
+        lore, locked = [s for s in lore if not is_secret(s)], False  # A secret a player unlocked is never told to another character.
+    block = lore_block(lore, player, locked and kind in ("chat", "emote"))
+    if block:
+        parts.append(block)
     if summary and kind != "banter" and kind in PAID_KINDS:
         parts.append(SUMMARY.format(player=player, summary=summary))
     if memories and kind != "banter" and kind in PAID_KINDS:
