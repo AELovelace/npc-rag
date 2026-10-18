@@ -330,7 +330,7 @@ def test_llm_pool_sends_more_work_to_the_faster_copy():
             for _ in range(10):
                 await pool.chat([{"role": "user", "content": "hi"}], max_tokens=5, temperature=0, timeout=5)
         await asyncio.gather(*(player() for _ in range(4)))
-        view = pool.view()
+        view = pool.copies()
         await pool.aclose()
         return view
     view = asyncio.run(run())
@@ -421,3 +421,11 @@ def test_responding_to_escapes_names_and_follows_the_last_speaker():
     assert addressee("ambient_reply", "Doll", {"name": "Wren"}, thread, "Felix") == "Wren"
     assert addressee("ambient_answer", "Doll", {"name": "Wren"}, thread, "Felix") == "Doll"
     assert strip_markers('{"secret":"open"} {"responding_to":"Kit"}Fine, Kit.') == "Fine, Kit."
+
+
+def test_a_llama_pool_never_masquerades_as_the_overflow_state():
+    """2026-10-18: LlamaPool.view() made /health report a list as "overflow", and the capacity test refused to run."""
+    from npc_rag.llm import LlamaPool, LlamaClient
+    pool = LlamaPool([LlamaClient("http://a"), LlamaClient("http://b")])
+    assert not hasattr(pool, "view"), "/health reads view() as the overflow state"
+    assert [c["url"] for c in pool.copies()] == ["http://a", "http://b"]

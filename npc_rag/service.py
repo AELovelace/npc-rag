@@ -190,6 +190,7 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
                 "classifier_url": settings.classifier_url if settings.classifier_backend == "llamacpp" else None,
                 "overflow": state["llm"].view() if hasattr(state["llm"], "view") else {"enabled": False},
                 "student_fleet": _fleet_view(),
+                "llm_copies": state["llm"].copies() if hasattr(state["llm"], "copies") else None,  # Speed-aware pool (LlamaPool).
                 "classification": {"policy": CLASSIFIER_REVISION, "cache": state["classifier_cache"].view(),
                                    **state["classifier"].view()},
                 'participation': ({'enabled': True, 'healthy': await state['participation'].health(),

@@ -308,8 +308,8 @@ class LlamaPool:
                 self._busy[i] -= 1
         raise last or LLMError("no llama.cpp servers configured")
 
-    def view(self) -> list[dict]:
-        """Per copy: requests in flight and recent seconds per reply (shown on /health under copies)."""
+    def copies(self) -> list[dict]:
+        """Per copy: requests in flight and recent seconds per reply (/health llm_copies). Not view(): /health reads view() as the overflow state."""
         return [{"url": str(getattr(getattr(c, "_client", None), "base_url", i)), "in_flight": self._busy[i],
                  "recent_s": round(self._seconds[i], 2)} for i, c in enumerate(self._clients)]
 
