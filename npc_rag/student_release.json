@@ -1,0 +1,22 @@
+{
+ "about": "Pinned lidoll-fm student GGUFs for STUDENT_FLEET=on. Each file is downloaded from download_url once, checked against bytes and sha256, and reused offline. Add a release here (and set it as default) when a new lidoll-fm ships.",
+ "default": "lidoll-fm-0.4",
+ "releases": {
+  "lidoll-fm-0.4": {
+   "file": "lidoll-fm-0.4-Q8_0.gguf",
+   "bytes": 1246253440,
+   "sha256": "771e2df50ca9f84760cb4854f37812b1f84a009cf51c1503e9a2903ba0e38184",
+   "download_url": "https://lidoll.dev/gguf/lidoll-fm-0.4-Q8_0.gguf",
+   "prompt_format": "live-npc-rag-v2",
+   "notes": "eval_loss 1.399; 98% on the A/B suite (node B, epoch-1 preview); trained on the v2 responding_to prompt."
+  },
+  "lidoll-fm-0.3": {
+   "file": "lidoll-fm-0.3-Q8_0.gguf",
+   "bytes": 1246253440,
+   "sha256": "c000880c541c77d9123c04b6207c23a40c3727a8297502793e36bd93fa73830d",
+   "download_url": "https://lidoll.dev/gguf/lidoll-fm-0.3-Q8_0.gguf",
+   "prompt_format": "live-npc-rag-v2",
+   "notes": "eval_loss 1.412; rollback target."
+  }
+ }
+}

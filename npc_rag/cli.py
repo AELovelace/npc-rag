@@ -28,7 +28,18 @@ def cmd_build_index(s, args) -> int:
 def cmd_serve(s, args) -> int:
     import uvicorn
     from .service import create_app
-    uvicorn.run(create_app(s), host=s.host, port=s.port, log_level="info")
+    fleet = None
+    if s.student_fleet:  # STUDENT_FLEET=on: fetch the pinned lidoll-fm GGUF and run our own llama-server copies first.
+        import atexit
+        from .student_fleet import StudentFleet
+        fleet = StudentFleet(s).start()
+        atexit.register(fleet.stop)
+        s = replace(s, llm_url=fleet.urls, llm_concurrency=s.student_slots)  # Every copy, each allowed as many replies as it has slots.
+    try:
+        uvicorn.run(create_app(s), host=s.host, port=s.port, log_level="info")
+    finally:
+        if fleet:
+            fleet.stop()
     return 0
 
 

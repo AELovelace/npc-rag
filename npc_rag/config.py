@@ -135,6 +135,16 @@ class Settings:
     participation_timeout: float = 10.0
     rag_keyword_coverage: float = 0.5    # Share of a message's meaningful words one wiki chunk must hold for the keyword rule; above 1 disables it.
     rag_keyword_dense: float = 0.62      # Wiki score the keyword rule still requires (below RAG_GAME_EVIDENCE, above unrelated chat).
+    # ── Student fleet (student_fleet.py): npc-rag runs its own llama-server copies of the pinned lidoll-fm release ──
+    student_fleet: bool = False          # STUDENT_FLEET=on: fetch the pinned GGUF, launch copies, override LLM_URL / LLM_CONCURRENCY.
+    student_model: str = ""              # Release name in student_release.json ("" = its default, e.g. lidoll-fm-0.4).
+    llama_server: str = ""               # Path to llama-server(.exe), e.g. C:/Scripts/llama/Vulkan/llama-server.exe.
+    student_devices: str = "auto"        # "auto" (every dedicated GPU llama-server lists) or "Vulkan0,Vulkan1".
+    student_copies_per_device: int = 2   # Copies per card: each llama-server feeds its GPU from one CPU thread, so two beat one.
+    student_slots: int = 4               # -np per copy; also becomes LLM_CONCURRENCY.
+    student_ctx_per_slot: int = 8192     # Context per slot; -c = slots x this (8,192 fits the longest resident prompts with room).
+    student_base_port: int = 9090        # First port tried; npc-rag's own port and busy ports are skipped.
+    student_args: str = "--flash-attn on --cache-ram 0"  # Extra llama-server flags (no KV-cache quantization: it costs speed on Vulkan).
 
     def __post_init__(self):
         if not self.participation_model.strip() or not math.isfinite(self.participation_timeout) or not 0 < self.participation_timeout <= 120:
@@ -151,6 +161,10 @@ class Settings:
         if (not all(d.strip() and d == d.strip() for d in devices) or len(set(devices)) != len(devices)
                 or ("auto" in devices and len(devices) != 1)):
             raise ValueError("DECIDER_GPU_DEVICES must be auto or a comma-separated list of unique device names")
+        if self.student_fleet and not self.llama_server:
+            raise ValueError("STUDENT_FLEET=on needs LLAMA_SERVER (the path to llama-server.exe)")
+        if not 2048 <= self.student_ctx_per_slot <= 65536 or not 1024 <= self.student_base_port <= 65000:
+            raise ValueError("STUDENT_CTX_PER_SLOT must be 2048-65536 and STUDENT_BASE_PORT 1024-65000")
         if not (math.isfinite(self.rag_keyword_coverage) and math.isfinite(self.rag_keyword_dense)
                 and 0 < self.rag_keyword_coverage and 0 <= self.rag_keyword_dense <= 1):
             raise ValueError("RAG_KEYWORD_COVERAGE must be above 0 (above 1 disables it) and RAG_KEYWORD_DENSE must be 0-1")
@@ -225,4 +239,13 @@ def load_settings(env_file: str | None = None) -> Settings:
         participation_timeout=_positive_float('PARTICIPATION_TIMEOUT', 10.0),
         rag_keyword_coverage=_env_float("RAG_KEYWORD_COVERAGE", 0.5),
         rag_keyword_dense=_env_float("RAG_KEYWORD_DENSE", 0.62),
+        student_fleet=_env_bool("STUDENT_FLEET"),
+        student_model=_env("STUDENT_MODEL", ""),
+        llama_server=_env("LLAMA_SERVER", ""),
+        student_devices=",".join(d.strip() for d in _env("STUDENT_DEVICES", "auto").split(",")),
+        student_copies_per_device=_positive_int("STUDENT_COPIES_PER_DEVICE", 2),
+        student_slots=_positive_int("STUDENT_SLOTS", 4),
+        student_ctx_per_slot=_env_int("STUDENT_CTX_PER_SLOT", 8192),
+        student_base_port=_env_int("STUDENT_BASE_PORT", 9090),
+        student_args=_env("STUDENT_ARGS", "--flash-attn on --cache-ram 0"),
     )

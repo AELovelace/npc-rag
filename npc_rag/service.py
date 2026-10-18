@@ -66,6 +66,12 @@ class ReindexRequest(BaseModel):
     source: str | None = None  # Override WIKI_SOURCE for this rebuild only (URL or local web/wiki folder).
 
 
+def _fleet_view() -> dict:
+    """The llama-server copies npc-rag launched itself (STUDENT_FLEET=on), or {"enabled": false}."""
+    from . import student_fleet
+    return {"enabled": True, **student_fleet.CURRENT.view()} if student_fleet.CURRENT else {"enabled": False}
+
+
 def build_index(settings: Settings, embedder, source: str | None = None) -> WikiIndex:
     """Fetch the wiki, chunk + embed it and save it to INDEX_DIR."""
     src = source or settings.wiki_source
@@ -183,6 +189,7 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
                 "llm_url": settings.llm_url,
                 "classifier_url": settings.classifier_url if settings.classifier_backend == "llamacpp" else None,
                 "overflow": state["llm"].view() if hasattr(state["llm"], "view") else {"enabled": False},
+                "student_fleet": _fleet_view(),
                 "classification": {"policy": CLASSIFIER_REVISION, "cache": state["classifier_cache"].view(),
                                    **state["classifier"].view()},
                 'participation': ({'enabled': True, 'healthy': await state['participation'].health(),

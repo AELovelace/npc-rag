@@ -1,5 +1,34 @@
 # npc-rag: the LiDollQuest tutorial NPC
 
+## Student fleet: npc-rag runs its own lidoll-fm copies (2026-10-18)
+
+`STUDENT_FLEET=on` makes npc-rag start its own llama-server copies of the companion model, instead of you starting them by hand in Sakura.
+
+**What it does when npc-rag starts:**
+1. **Gets the model.** It downloads the release named in `npc_rag/student_release.json` from https://lidoll.dev/gguf/. The default is `lidoll-fm-0.4-Q8_0.gguf`. It checks the size and sha256, then keeps the file in `data/models/<release>/` and reuses it offline from then on.
+2. **Finds the GPUs** with `llama-server --list-devices` (or uses `STUDENT_DEVICES`).
+3. **Starts `STUDENT_COPIES_PER_DEVICE` copies on every card,** on free ports from `STUDENT_BASE_PORT`. Each copy runs with:
+   - `-np STUDENT_SLOTS`
+   - `-c` = slots × `STUDENT_CTX_PER_SLOT`
+   - `--n-gpu-layers 999 --device <card>`
+   - plus `STUDENT_ARGS` (default `--flash-attn on --cache-ram 0`)
+4. **Waits until every copy's `/health` answers,** then points itself at them: `LLM_URL` becomes all the copies, and `LLM_CONCURRENCY` becomes `STUDENT_SLOTS`.
+5. **Keeps them running.** A watchdog restarts any copy that exits, waiting longer after each crash, up to 60 s. On Windows the copies sit in a job object, so they die with npc-rag, even after `Stop-Process -Force`. `data/student-fleet.json` cleans up any leftovers on the next start.
+6. **Reports on `/health`,** under `student_fleet`: the model, ports, cards, whether each copy is alive, and its restart count.
+
+**Why several copies per card:** llama-server feeds its GPU from **one CPU thread**. On node A's RX 6800 XTs (Vulkan), that thread was pinned at 100% while the GPU waited, which capped one copy at about 90 generated tokens/s however many slots it had. Each extra copy brings its own thread.
+
+**What to avoid:**
+- **Don't compress the KV cache** (`--cache-type-k/v`). It didn't help speed, and a 1.2B model's cache is tiny anyway.
+- **Measure before and after a change** with lidollquest `python/llama_concurrency_sweep.py http://<node>:<port>`, which takes about 20 s.
+
+**Switching a node over:**
+1. Stop Sakura's 9090/9091 copies.
+2. In `.env`, set `STUDENT_FLEET=on` and `LLAMA_SERVER=C:/Scripts/llama/Vulkan/llama-server.exe`. For Titan X nodes, point it at the CUDA build.
+3. Run `ps\Start-NpcRag.ps1`. The first start downloads the model (1.25 GB).
+
+**Updating or rolling back:** add a new release to `student_release.json` (file, bytes, sha256, download_url) and make it the `default`. To roll back, set `STUDENT_MODEL=lidoll-fm-0.3`.
+
 ## Authorized v3 rollout (2026-10-15)
 
 The user accepted the known opening miss and selected v3 for rollout with v2 rollback.
