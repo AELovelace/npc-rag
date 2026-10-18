@@ -116,8 +116,17 @@ def test_clean_leftovers_only_stops_our_llama_server(tmp_path, monkeypatch):
     assert killed == [11] and not pidfile.exists()
 
 
-def test_fleet_needs_a_llama_server_path(monkeypatch):
+def test_llama_server_is_found_when_not_configured(tmp_path, monkeypatch):
     monkeypatch.setenv("STUDENT_FLEET", "on")
     monkeypatch.setenv("LLAMA_SERVER", "")
-    with pytest.raises(ValueError, match="LLAMA_SERVER"):
-        load_settings()
+    assert load_settings().student_fleet, "an empty LLAMA_SERVER is allowed: the fleet looks for one at start"
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    (tmp_path / "CUDA").mkdir(); (tmp_path / "Vulkan").mkdir()
+    for build in ("CUDA", "Vulkan"):
+        (tmp_path / build / "llama-server.exe").write_bytes(b"")
+    found = fleet_mod.find_llama_server("", patterns=(str(tmp_path / "*" / "llama-server.exe"),))
+    assert Path(found).parent.name == "Vulkan", "a Vulkan build is preferred when several are installed"
+    with pytest.raises(RuntimeError, match="no llama-server was found"):
+        fleet_mod.find_llama_server("", patterns=(str(tmp_path / "missing" / "*.exe"),))
+    with pytest.raises(RuntimeError, match="does not exist"):
+        fleet_mod.find_llama_server(str(tmp_path / "nope.exe"))

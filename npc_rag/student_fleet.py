@@ -73,6 +73,28 @@ def ensure_student(name: str = "", destination: Path | None = None, manifest: Pa
     return target
 
 
+SEARCH = ("C:/Scripts/llama/*/llama-server.exe", "C:/Scripts/llama/llama-server.exe", "C:/Scripts/Sakura_LLAMA-Server/**/llama-server.exe",
+          "C:/Scripts/llama.cpp/**/llama-server.exe", "/usr/local/bin/llama-server", "/opt/llama.cpp/**/llama-server")
+
+
+def find_llama_server(configured: str = "", patterns=SEARCH) -> str:
+    """LLAMA_SERVER if set, else llama-server on PATH, else the usual install folders (a Vulkan build is preferred on Windows)."""
+    if configured:
+        if not Path(configured).is_file():
+            raise RuntimeError(f"LLAMA_SERVER={configured} does not exist")
+        return configured
+    import glob
+    import shutil
+    found = shutil.which("llama-server") or shutil.which("llama-server.exe")
+    if found:
+        return found
+    hits = sorted({h for p in patterns for h in glob.glob(p, recursive=True)}, key=lambda h: ("vulkan" not in h.lower(), h))
+    if hits:
+        return hits[0]
+    raise RuntimeError("STUDENT_FLEET=on but no llama-server was found. Set LLAMA_SERVER=<path to llama-server.exe> in .env "
+                       "(looked on PATH and in: " + ", ".join(patterns) + ")")
+
+
 def list_devices(server: str, runner=subprocess.run) -> list[dict]:
     """GPUs as llama-server itself names them (Vulkan0, CUDA0, ...); CPU entries are skipped."""
     out = runner([server, "--list-devices"], capture_output=True, text=True, timeout=120)
@@ -230,7 +252,10 @@ class StudentFleet:
     # -- lifecycle ------------------------------------------------------------------------------------------------------
     def start(self, timeout: float = 600) -> "StudentFleet":
         global CURRENT
+        from dataclasses import replace
+        self.settings = replace(self.settings, llama_server=find_llama_server(self.settings.llama_server))
         s = self.settings
+        LOG.info("Student fleet using %s", s.llama_server)
         self.spec = release(s.student_model)
         self.model = self.model or ensure_student(s.student_model)
         clean_leftovers(s.llama_server, self.pidfile)

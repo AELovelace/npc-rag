@@ -161,8 +161,6 @@ class Settings:
         if (not all(d.strip() and d == d.strip() for d in devices) or len(set(devices)) != len(devices)
                 or ("auto" in devices and len(devices) != 1)):
             raise ValueError("DECIDER_GPU_DEVICES must be auto or a comma-separated list of unique device names")
-        if self.student_fleet and not self.llama_server:
-            raise ValueError("STUDENT_FLEET=on needs LLAMA_SERVER (the path to llama-server.exe)")
         if not 2048 <= self.student_ctx_per_slot <= 65536 or not 1024 <= self.student_base_port <= 65000:
             raise ValueError("STUDENT_CTX_PER_SLOT must be 2048-65536 and STUDENT_BASE_PORT 1024-65000")
         if not (math.isfinite(self.rag_keyword_coverage) and math.isfinite(self.rag_keyword_dense)

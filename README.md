@@ -24,7 +24,7 @@
 
 **Switching a node over:**
 1. Stop Sakura's 9090/9091 copies.
-2. In `.env`, set `STUDENT_FLEET=on` and `LLAMA_SERVER=C:/Scripts/llama/Vulkan/llama-server.exe`. For Titan X nodes, point it at the CUDA build.
+2. In `.env`, set `STUDENT_FLEET=on`. `LLAMA_SERVER` is optional: if it's empty, npc-rag looks for llama-server on PATH, then in `C:/Scripts/llama/*/` and the Sakura folder (a Vulkan build is preferred). For Titan X nodes, set it to the CUDA build.
 3. Run `ps\Start-NpcRag.ps1`. The first start downloads the model (1.25 GB).
 
 **Updating or rolling back:** add a new release to `student_release.json` (file, bytes, sha256, download_url) and make it the `default`. To roll back, set `STUDENT_MODEL=lidoll-fm-0.3`.
