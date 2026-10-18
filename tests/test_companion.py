@@ -309,6 +309,35 @@ def test_llm_pool_spreads_over_copies_and_skips_a_dead_one():
     assert isinstance(make_llm("http://127.0.0.1:9090, http://127.0.0.1:9091"), LlamaPool)
 
 
+def test_llm_pool_sends_more_work_to_the_faster_copy():
+    """Node A 2026-10-18: one card ~4x slower than the other. Least-busy alone split replies evenly; the pool now weighs
+    each copy by its recent reply time, so the fast copy takes most of a steady stream and the slow one still helps."""
+    import asyncio
+    import httpx
+    from npc_rag.llm import LlamaClient, LlamaPool
+    seen = []
+
+    def copy(name, seconds):
+        async def handler(request):
+            await asyncio.sleep(seconds)
+            seen.append(name)
+            return httpx.Response(200, json={"choices": [{"message": {"content": name}}]})
+        return LlamaClient("http://" + name, concurrency=4, transport=httpx.MockTransport(handler))
+
+    async def run():
+        pool = LlamaPool([copy("slow", 0.08), copy("fast", 0.02)])
+        async def player():
+            for _ in range(10):
+                await pool.chat([{"role": "user", "content": "hi"}], max_tokens=5, temperature=0, timeout=5)
+        await asyncio.gather(*(player() for _ in range(4)))
+        view = pool.view()
+        await pool.aclose()
+        return view
+    view = asyncio.run(run())
+    assert seen.count("fast") >= 2 * seen.count("slow") > 0, f"fast {seen.count('fast')} vs slow {seen.count('slow')}"
+    assert view[1]["recent_s"] < view[0]["recent_s"] and all(v["in_flight"] == 0 for v in view)
+
+
 def test_copied_lines_are_retried_once(loose, embedder, index, llama, clf):
     """Continuity test 2026-10-13 (Qwen3-4B): a hug got the voice line back; banter parroted the partner."""
     from npc_rag.companion.prompts import copied

@@ -16,6 +16,8 @@
 5. **Keeps them running.** A watchdog restarts any copy that exits, waiting longer after each crash, up to 60 s. On Windows the copies sit in a job object, so they die with npc-rag, even after `Stop-Process -Force`. `data/student-fleet.json` cleans up any leftovers on the next start.
 6. **Reports on `/health`,** under `student_fleet`: the model, ports, cards, whether each copy is alive, and its restart count.
 
+**How npc-rag shares replies across copies:** each reply goes to the copy with the lowest (requests in flight + 1) × recent seconds per reply. This is the same idea as the game server's pool between nodes. A faster card therefore takes more of the work, and a slower one still helps. Plain "least busy" gave node A's ~4× slower card 0 the same share as card 1, which created the slow tail (`llm.py` `LlamaPool`, 2026-10-18).
+
 **Why several copies per card:** llama-server feeds its GPU from **one CPU thread**. On node A's RX 6800 XTs (Vulkan), that thread was pinned at 100% while the GPU waited, which capped one copy at about 90 generated tokens/s however many slots it had. Each extra copy brings its own thread.
 
 **What to avoid:**

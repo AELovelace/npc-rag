@@ -275,25 +275,43 @@ class LlamaClient:
 
 
 class LlamaPool:
-    """Several llama.cpp servers for one role (e.g. one model copy per graphics card): each call goes to the copy with
-    the fewest requests in flight, and a copy that fails is skipped for that call. Same interface as LlamaClient."""
+    """Several llama.cpp servers for one role (e.g. copies on several graphics cards): each call goes to the copy with the
+    lowest (requests in flight + 1) x recent seconds per reply, so a faster card takes more of the work while a slower one
+    still helps (node A 2026-10-18: one RX 6800 XT ran ~4x slower than the other; "least busy" alone gave both the same share
+    and the slow card made the slow tail). A copy that fails is skipped for that call. Same interface as LlamaClient."""
+
+    EWMA = 0.3          # Weight of the newest reply time in each copy's average (same as the game server's ai-pool).
+    START = 1.0         # Seconds assumed for a copy before its first reply.
 
     def __init__(self, clients: list[LlamaClient]):
         self._clients = clients
         self._busy = [0] * len(clients)                      # Requests in flight per copy.
+        self._seconds = [self.START] * len(clients)          # Recent seconds per successful reply, per copy.
+
+    def _score(self, i: int) -> float:
+        return (self._busy[i] + 1) * self._seconds[i]
 
     async def chat(self, messages: list[dict], **kwargs) -> str:
-        order = sorted(range(len(self._clients)), key=lambda i: self._busy[i])  # Least busy first.
+        order = sorted(range(len(self._clients)), key=self._score)  # Least (busy x slow) first.
         last: LLMError | None = None
         for i in order:
             self._busy[i] += 1
+            started = time.perf_counter()
             try:
-                return await self._clients[i].chat(messages, **kwargs)
+                reply = await self._clients[i].chat(messages, **kwargs)
+                self._seconds[i] += self.EWMA * (time.perf_counter() - started - self._seconds[i])
+                return reply
             except LLMError as exc:
+                self._seconds[i] = min(60.0, self._seconds[i] * 2)  # A failing copy looks slow for a while, then recovers.
                 last = exc                                     # Try the next copy; the caller only sees an error if all fail.
             finally:
                 self._busy[i] -= 1
         raise last or LLMError("no llama.cpp servers configured")
+
+    def view(self) -> list[dict]:
+        """Per copy: requests in flight and recent seconds per reply (shown on /health under copies)."""
+        return [{"url": str(getattr(getattr(c, "_client", None), "base_url", i)), "in_flight": self._busy[i],
+                 "recent_s": round(self._seconds[i], 2)} for i, c in enumerate(self._clients)]
 
     async def background(self, messages: list[dict], *, reserve: int = 2, **kwargs) -> str:
         """Ambient generation across every copy: refused unless more than `reserve` slots are free in total."""
