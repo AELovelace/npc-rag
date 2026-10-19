@@ -20,7 +20,8 @@ ufw opens only 9091 and 9092. Copies never take 9090, 9091 or 9092, even with an
 **The control page (9091).** It runs as its own service (`npc-rag-admin.service`), so it stays up while npc-rag restarts. It shows:
 - tiles for npc-rag, the main model, reply slots, the student model, copies alive, the Decider, the systemd state and the restart count;
 - one row per student copy: card, port, alive, restarts, last exit code, requests in flight, recent seconds per reply;
-- the machine: load, free memory and disk, GPUs from `rocm-smi` (or `nvidia-smi`);
+- a GPU table: temperature, hotspot, VRAM used / total and %, busy % and power per card (hot or nearly full cards turn amber or red);
+- the machine: load, RAM used / free (and swap), the npc-rag process's memory, and disk;
 - the npc-rag journal tail and the raw `/health`.
 
 It can:
@@ -102,6 +103,23 @@ It is safe to run again: an existing `.env` keeps its own choices. `KillMode=con
 - `CLASSIFIER_BACKEND=llamacpp` would now point at the control page (its old default URL is `:9091`). Student-fleet nodes use `decider`.
 - The GM handbook's `GM_LLM_URL` default is `:9090`, which nothing serves on a student-fleet node. Point it at `http://127.0.0.1:9100`.
 - The scripts in `linux/` must keep LF line endings (`.gitattributes` pins them). A CRLF breaks bash and systemd.
+
+## GPU and RAM readings on /health (2026-10-19)
+
+`/health` has a `hardware` block, and the control page and the GM panel's AI Tester show it:
+
+```json
+"hardware": {"gpus": [{"index": 0, "vendor": "amd", "name": "Radeon RX 6800 / 6800 XT / 6900 XT", "temp_c": 61.0, "hotspot_c": 78.0,
+  "mem_temp_c": 70.0, "vram_used_mb": 12800, "vram_total_mb": 16384, "vram_pct": 78.1, "busy_pct": 37, "power_w": 180.5}],
+  "gpu_source": "sysfs", "ram": {"total_gb": 31.3, "available_gb": 12.0, "used_gb": 19.3, "used_pct": 61.7, "swap_used_gb": 0.0},
+  "npc_rag_rss_mb": 1840, "at": 1792438432}
+```
+
+- **AMD on Linux** is read from the amdgpu driver's own files under `/sys/class/drm/card*/device`, so rocm-smi isn't needed and nothing is spawned.
+- **NVIDIA** (Linux or Windows) costs one `nvidia-smi` query. NVIDIA cards have no hotspot or memory temperature here.
+- **RAM** comes from `/proc/meminfo` on Linux and `GlobalMemoryStatusEx` on Windows. `npc_rag_rss_mb` is Linux only.
+- A sensor a card doesn't have is `null`.
+- **It never slows /health:** a reading is cached for 5 s and gathered in a worker thread. If a fresh one takes over 3 s, `/health` returns the last reading with an `error` note instead of waiting (`npc_rag/hardware.py`).
 
 ## Student fleet: npc-rag runs its own lidoll-fm copies (2026-10-18)
 

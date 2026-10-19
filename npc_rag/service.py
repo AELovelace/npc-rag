@@ -23,6 +23,7 @@ from .speaking_style import SpeakingStyle, style_prompt
 from .classifier import CLASSIFIER_REVISION, GAME, GENERAL, ModelDecisionCache, Verdict, classify
 from .classifier_backend import make_classifier
 from .common import Sessions, api_key_guard
+from . import hardware
 from .config import Settings
 from .guard import find_unsupported_terms, leaks_persona, retry_rule, select_hits, to_ascii
 from .index import WikiIndex
@@ -200,6 +201,7 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
                 "student_fleet": _fleet_view(),
                 "llm_copies": state["llm"].copies() if hasattr(state["llm"], "copies") else None,  # Speed-aware pool (LlamaPool).
                 "capacity": {"slots": _slots(state["llm"])},  # Total local reply slots: the game server sizes its pool from this, not llama.cpp's port.
+                "hardware": await hardware.snapshot_async(),  # GPU temps/VRAM/busy and system RAM; cached 5 s, never blocks long.
                 "classification": {"policy": CLASSIFIER_REVISION, "cache": state["classifier_cache"].view(),
                                    **state["classifier"].view()},
                 'participation': ({'enabled': True, 'healthy': await state['participation'].health(),

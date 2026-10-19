@@ -41,6 +41,8 @@ input,select{font:inherit;width:100%;padding:6px 8px;border:1px solid var(--line
   <div class="card"><h2>Student copies</h2><div class="scroll"><table id="copies"></table></div>
    <p class="soft" id="copynote"></p></div>
 
+  <div class="card"><h2>GPUs</h2><div class="scroll"><table id="gpus"></table></div><p class="soft" id="gpunote"></p></div>
+
   <div class="card"><h2>Machine</h2><div class="scroll"><table id="machine"></table></div></div>
 
   <div class="card"><h2>Repository updates</h2>
@@ -99,14 +101,16 @@ async function refresh(){ // Status every 10 s.
   const live=recent['http://127.0.0.1:'+c.port]||{};
   return [c.device,c.port,td(c.alive?'yes':'no',c.alive?'ok':'bad'),c.restarts,c.last_exit??'',live.in_flight??'',live.recent_s??''];}));
  $('copynote').textContent=f.enabled?('Slots per copy '+f.slots_per_copy+', context per slot '+f.ctx_per_slot+', file '+(f.file||'?')):'STUDENT_FLEET is off: npc-rag talks to LLM_URL ('+(h.llm_url||'?')+').';
- const host=s.host||{},rows=[['Platform',host.platform],['Load (1/5/15 min)',(host.load||[]).join(' / ')||'n/a'],
-  ['Memory free',host.mem_total_gb?host.mem_free_gb+' of '+host.mem_total_gb+' GB':'n/a'],['Disk free',host.disk_free_gb+' GB'],
+ const host=s.host||{},hw=s.hardware||{},mem=hw.ram,rows=[['Platform',host.platform],['Load (1/5/15 min)',(host.load||[]).join(' / ')||'n/a'],
+  ['RAM',mem?mem.used_gb+' of '+mem.total_gb+' GB used ('+mem.used_pct+'%), '+mem.available_gb+' GB free'+(mem.swap_used_gb?', swap '+mem.swap_used_gb+' GB':''):'n/a'],
+  ['npc-rag process',hw.npc_rag_rss_mb!=null?hw.npc_rag_rss_mb+' MB':'n/a'],['Disk free',host.disk_free_gb+' GB'],
   ['Service PID',svc.MainPID??'n/a'],['Up since',svc.ActiveEnterTimestamp??'n/a']];
- const g=s.gpus||{};
- if(Array.isArray(g.cards))g.cards.forEach((c,i)=>rows.push(['GPU '+i,c.name+': '+c.util_pct+'% busy, '+c.mem_used_mb+' / '+c.mem_total_mb+' MB, '+c.temp_c+' °C']));
- else if(g.cards)Object.entries(g.cards).forEach(([card,v])=>rows.push([card,Object.entries(v).map(([k,x])=>k+': '+x).join(', ')])); // rocm-smi JSON as-is.
- else rows.push(['GPUs','no rocm-smi / nvidia-smi']);
  table('machine',['',''],rows);
+ const heat=t=>t==null?'':td(t+' °C',t>=90?'bad':t>=80?'warn':''); // RDNA2 hotspot throttles near 110 °C; 90+ is worth a look.
+ table('gpus',['GPU','Card','Temp','Hotspot','VRAM','VRAM %','Busy','Power'],(hw.gpus||[]).map(c=>[c.index,c.name,heat(c.temp_c),heat(c.hotspot_c),
+  c.vram_used_mb!=null?(c.vram_used_mb/1024).toFixed(1)+' / '+(c.vram_total_mb/1024).toFixed(1)+' GB':'',c.vram_pct!=null?td(c.vram_pct+'%',c.vram_pct>=95?'bad':c.vram_pct>=85?'warn':''):'',
+  c.busy_pct!=null?c.busy_pct+'%':'',c.power_w!=null?c.power_w+' W':'']));
+ $('gpunote').textContent=(hw.gpus||[]).length?'From '+hw.gpu_source+(hw.error?' ('+hw.error+')':''):'No GPU readings (no amdgpu sysfs or nvidia-smi on this machine).';
  const up=s.update||{};
  $('updatebtn').disabled=!up.available||!!up.running||!!s.sweep?.running;
  $('updatestate').textContent=(up.running?'Working: ':'')+(up.message||'Repository updater is not installed.');

@@ -140,6 +140,7 @@ def test_overflow_service_preserves_auth_guard_and_companion_context(settings, e
         health = client.get("/health").json()
         assert health["overflow"]["enabled"] is True and health["llm"] is True
         assert "provider-secret" not in json.dumps(health)
+        assert isinstance(health["hardware"]["gpus"], list) and "ram" in health["hardware"], "GPU temps/VRAM and RAM ride along (2026-10-19)"
 
 
 def test_separate_environment_file_does_not_load_local_dotenv(tmp_path, monkeypatch):

@@ -32,6 +32,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from . import hardware  # GPU temps, VRAM, busy %, power and RAM (also in /health).
 from .config import ROOT, Settings
 
 PAGE = Path(__file__).with_name("admin_page.html")  # The single-page UI (plain HTML + JS, no CDN).
@@ -229,37 +230,13 @@ def update_status() -> dict:
     return result
 
 
-def gpu_state() -> dict:
-    """Best-effort GPU table from rocm-smi or nvidia-smi; {} when neither is installed."""
-    if shutil.which("rocm-smi"):
-        code, out = _run(["rocm-smi", "--showuse", "--showmemuse", "--showtemp", "--showproductname", "--json"])
-        if code == 0:
-            try:
-                return {"tool": "rocm-smi", "cards": json.loads(out)}
-            except ValueError:
-                pass
-    if shutil.which("nvidia-smi"):
-        code, out = _run(["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
-                          "--format=csv,noheader,nounits"])
-        if code == 0:
-            cols = ("name", "util_pct", "mem_used_mb", "mem_total_mb", "temp_c")
-            return {"tool": "nvidia-smi", "cards": [dict(zip(cols, (v.strip() for v in row.split(","))))
-                                                    for row in out.splitlines() if row.strip()]}
-    return {}
-
-
 def host_state() -> dict:
-    """Load, memory and disk of this machine."""
+    """Load and disk of this machine (RAM and GPUs: npc_rag.hardware)."""
     info: dict = {"platform": sys.platform}
     disk = shutil.disk_usage(ROOT)
     info["disk_free_gb"] = round(disk.free / 2**30, 1)
     if hasattr(os, "getloadavg"):
         info["load"] = [round(x, 2) for x in os.getloadavg()]
-    meminfo = Path("/proc/meminfo")
-    if meminfo.is_file():
-        rows = dict(line.split(":", 1) for line in meminfo.read_text().splitlines() if ":" in line)
-        kb = lambda k: int(rows.get(k, "0 kB").split()[0])  # noqa: E731 - meminfo values are "123 kB".
-        info["mem_total_gb"], info["mem_free_gb"] = round(kb("MemTotal") / 2**20, 1), round(kb("MemAvailable") / 2**20, 1)
     return info
 
 
@@ -411,9 +388,9 @@ def create_admin_app(s: Settings, env_file: str | None = None, audit_file: Path 
                 health = _scrub(r.json())
         except Exception as error:  # npc-rag restarting or down: the page still works.
             health = {"error": f"npc-rag not answering on {s.port}: {type(error).__name__}"}
-        service, gpus, host = await asyncio.gather(asyncio.to_thread(service_state, s.admin_service),
-                                                   asyncio.to_thread(gpu_state), asyncio.to_thread(host_state))
-        return {"health": health, "service": service, "gpus": gpus, "host": host, "sweep": sweep, "update": await repository_state(),
+        service, machine, host = await asyncio.gather(asyncio.to_thread(service_state, s.admin_service),
+                                                      hardware.snapshot_async(), asyncio.to_thread(host_state))
+        return {"health": health, "service": service, "hardware": machine, "host": host, "sweep": sweep, "update": await repository_state(),
                 "restart_available": restart_command(s) is not None, "env_file": str(env)}
 
     @app.get("/api/update")
