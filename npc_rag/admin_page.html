@@ -101,7 +101,7 @@ async function refresh(){ // Status every 10 s.
   const live=recent['http://127.0.0.1:'+c.port]||{};
   return [c.device,c.port,td(c.alive?'yes':'no',c.alive?'ok':'bad'),c.restarts,c.last_exit??'',live.in_flight??'',live.recent_s??''];}));
  $('copynote').textContent=f.enabled?('Slots per copy '+f.slots_per_copy+', context per slot '+f.ctx_per_slot+', file '+(f.file||'?')):'STUDENT_FLEET is off: npc-rag talks to LLM_URL ('+(h.llm_url||'?')+').';
- const host=s.host||{},hw=s.hardware||{},mem=hw.ram,rows=[['Platform',host.platform],['Load (1/5/15 min)',(host.load||[]).join(' / ')||'n/a'],
+ const host=s.host||{},hw=s.hardware||h.hardware||{},mem=hw.ram,rows=[['Platform',host.platform],['Load (1/5/15 min)',(host.load||[]).join(' / ')||'n/a'],
   ['RAM',mem?mem.used_gb+' of '+mem.total_gb+' GB used ('+mem.used_pct+'%), '+mem.available_gb+' GB free'+(mem.swap_used_gb?', swap '+mem.swap_used_gb+' GB':''):'n/a'],
   ['npc-rag process',hw.npc_rag_rss_mb!=null?hw.npc_rag_rss_mb+' MB':'n/a'],['Disk free',host.disk_free_gb+' GB'],
   ['Service PID',svc.MainPID??'n/a'],['Up since',svc.ActiveEnterTimestamp??'n/a']];

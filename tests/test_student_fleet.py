@@ -161,3 +161,45 @@ def test_a_hip_build_that_sees_no_gpu_falls_back_to_vulkan(settings):
     assert fleet._detect(["hip", "vulkan"], probe=seen.get) == ("vulkan", ["Vulkan0"])
     with pytest.raises(RuntimeError, match="no ROCm-capable device"):
         fleet._detect(["hip"], probe=seen.get)
+
+
+class _Running:
+    """A process that runs until killed."""
+    returncode = None
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.returncode = -9
+
+
+def test_a_frozen_copy_is_killed_after_three_missed_probes_and_a_fresh_one_is_left_to_load(settings, tmp_path):
+    answers = {9100: [False, False, True, False, False, False], 9101: [None] * 6, 9102: [False] * 6}  # True = answered, None = can't tell.
+    fleet = fleet_mod.StudentFleet(settings, logs=tmp_path, pidfile=tmp_path / "f.json",
+                                   probe=lambda url: answers[int(url.rsplit(":", 1)[1])].pop(0))
+    frozen, unknown, loading = (fleet_mod.Copy("ROCm0", p, process=_Running()) for p in (9100, 9101, 9102))
+    loading.started_at = 1000.0  # Spawned "just now": still inside HANG_GRACE_S.
+    fleet.copies = [frozen, unknown, loading]
+    killed = [fleet.check_hangs(now=1000.0 + i) for i in range(6)]
+    assert killed[0] == killed[1] == killed[2] == [], "an answer in between resets the count"
+    assert killed[3] == killed[4] == [] and killed[5] == [frozen], "three misses in a row kill the frozen copy"
+    assert frozen.process.poll() == -9 and frozen.hangs == 1
+    assert unknown.process.poll() is None, "a copy whose /slots is disabled is never killed"
+    assert loading.process.poll() is None and answers[9102] == [False] * 6, "a loading copy is not even probed"
+    assert fleet.view()["copies"][0]["hangs"] == 1
+
+
+def test_responsive_needs_the_work_loop_not_just_health(monkeypatch):
+    import httpx
+    calls = []
+    def fake_get(url, timeout):
+        calls.append(url)
+        if "9100" in url:
+            raise httpx.ReadTimeout("frozen")
+        return httpx.Response(501 if "9101" in url else 200)
+    monkeypatch.setattr(httpx, "get", fake_get)
+    assert fleet_mod.responsive("http://127.0.0.1:9100") is False
+    assert fleet_mod.responsive("http://127.0.0.1:9101") is None
+    assert fleet_mod.responsive("http://127.0.0.1:9102") is True
+    assert all(u.endswith("/slots") for u in calls)

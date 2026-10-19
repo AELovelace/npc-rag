@@ -144,6 +144,26 @@ class Copy:
     exited_at: float | None = None
     last_exit: int | None = None
     log: Path | None = None
+    started_at: float = 0.0       # monotonic time of the last spawn (hang probes wait HANG_GRACE_S after it).
+    misses: int = 0               # Hang probes missed in a row.
+    hangs: int = 0                # Times this copy was killed for hanging (also counted in restarts).
+
+
+HANG_CHECK_S = 10.0   # How often every copy's work loop is probed.
+HANG_TIMEOUT_S = 8.0  # A probe slower than this is a miss.
+HANG_LIMIT = 3        # This many misses in a row (~30 s) and the copy is killed and restarted.
+HANG_GRACE_S = 180.0  # A fresh copy is not probed while it loads the model.
+
+
+def responsive(url: str, timeout: float = HANG_TIMEOUT_S) -> bool | None:
+    """Is a llama-server's work loop alive? /health answers from its HTTP thread even when the loop is frozen
+    (2026-10-19: stuck saving into --cache-ram), but /slots is a task the loop itself must run.
+    True = answered, False = timed out or refused, None = can't tell (/slots disabled with --no-slots)."""
+    try:
+        status = httpx.get(url + "/slots", timeout=timeout).status_code
+    except httpx.HTTPError:
+        return False
+    return None if status == 501 else True  # 200, or 503 while loading: the loop is running.
 
 
 def plan(devices: list[str], copies_per_device: int, base_port: int, reserved=(), free=port_free) -> list[Copy]:
@@ -268,8 +288,9 @@ def clean_leftovers(server: str, pidfile: Path = PIDFILE, kill=None) -> int:
 
 class StudentFleet:
     def __init__(self, settings, *, model: Path | None = None, devices: list[str] | None = None, popen=subprocess.Popen,
-                 logs: Path | None = None, pidfile: Path = PIDFILE, ready_url=None):
+                 logs: Path | None = None, pidfile: Path = PIDFILE, ready_url=None, probe=responsive):
         self.settings, self.model, self.devices, self.popen = settings, model, devices, popen
+        self.probe = probe  # responsive(): is a copy's work loop alive (/slots), not just its HTTP thread (/health)?
         self.logs, self.pidfile = Path(logs or ROOT / "logs"), Path(pidfile)
         self.ready_url = ready_url or (lambda c: f"http://127.0.0.1:{c.port}/health")
         self.copies: list[Copy] = []
@@ -333,7 +354,7 @@ class StudentFleet:
         return {"model": self.spec.get("name"), "file": self.spec.get("file"), "slots_per_copy": self.settings.student_slots,
                 "ctx_per_slot": self.settings.student_ctx_per_slot,
                 "copies": [{"device": c.device, "port": c.port, "alive": bool(c.process and c.process.poll() is None),
-                            "restarts": c.restarts, "last_exit": c.last_exit} for c in self.copies]}
+                            "restarts": c.restarts, "hangs": c.hangs, "last_exit": c.last_exit} for c in self.copies]}
 
     # -- internals ------------------------------------------------------------------------------------------------------
     def _detect(self, servers: list[str], probe=probe_devices) -> tuple[str, list[str]]:
@@ -360,6 +381,7 @@ class StudentFleet:
             extra = {"preexec_fn": _die_with_parent} if os.name != "nt" and os.path.exists("/proc/self") else {}
             copy.process = self.popen(command(self.settings, self.model, copy), stdout=log, stderr=subprocess.STDOUT,
                                       stdin=subprocess.DEVNULL, creationflags=flags, **extra)
+        copy.started_at, copy.misses = time.monotonic(), 0  # A fresh copy gets its loading grace before hang probes.
         self._job.add(copy.process)
 
     def _save_pids(self) -> None:
@@ -389,8 +411,42 @@ class StudentFleet:
             if waiting:
                 time.sleep(1)
 
+    def check_hangs(self, now: float | None = None) -> list[Copy]:
+        """Probe every running copy's work loop; kill any that missed HANG_LIMIT probes in a row (the exit path
+        below then restarts it). Returns the copies killed. Network calls run outside the lock, in parallel."""
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            due = [c for c in self.copies if c.process and c.process.poll() is None and now - c.started_at >= HANG_GRACE_S]
+        if not due:
+            return []
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=len(due)) as pool:
+            answers = list(pool.map(lambda c: self.probe(f"http://127.0.0.1:{c.port}"), due))
+        killed = []
+        with self._lock:
+            for copy, alive in zip(due, answers):
+                if alive is not False:
+                    copy.misses = 0  # Answered (or can't be checked): healthy as far as we can tell.
+                    continue
+                copy.misses += 1
+                if copy.misses >= HANG_LIMIT and copy.process.poll() is None:
+                    LOG.warning("llama-server %s:%s stopped answering /slots %d times in a row (frozen work loop); "
+                                "killing it so the watchdog restarts it. See %s", copy.device, copy.port, copy.misses, copy.log)
+                    copy.hangs += 1
+                    copy.misses = 0
+                    copy.process.kill()
+                    killed.append(copy)
+        return killed
+
     def _watchdog(self, interval: float = 2.0) -> None:
+        last_probe = time.monotonic()
         while not self._stop.wait(interval):
+            if time.monotonic() - last_probe >= HANG_CHECK_S:
+                last_probe = time.monotonic()
+                try:
+                    self.check_hangs()
+                except Exception:  # A probe problem must never stop the exit watchdog below.
+                    LOG.exception("student fleet hang check failed")
             with self._lock:
                 for copy in self.copies:
                     code = copy.process.poll() if copy.process else 0

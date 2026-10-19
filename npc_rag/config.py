@@ -147,7 +147,7 @@ class Settings:
     student_base_port: int = 9100        # First port tried for llama copies (9090 kept free, 9091 control page, 9092 this API).
     student_host: str = "127.0.0.1"      # Copies listen on this machine only; npc-rag and the control page are their only callers.
     student_reserved_ports: str = "9090,9091"  # Never used for copies (npc-rag's own and the control page's ports are added too).
-    student_args: str = "--flash-attn on --cache-ram 4096"  # RAM prompt cache on (4 GB per copy): +~25% under 100 players (2026-10-18); no KV quantization.
+    student_args: str = "--flash-attn on --cache-ram 0"  # No RAM prompt cache: it froze both HIP copies saving a prompt (2026-10-19), LFM2's hybrid memory mostly misses it, and HIP reads a prompt in ~0.1 s anyway. No KV quantization.
     # ── Control page (admin.py, `python -m npc_rag admin`): setup + health on its own port ──
     admin_host: str = "0.0.0.0"          # Where the control page listens.
     admin_port: int = 9091               # Node layout: 9090 kept free, 9091 this page, 9092 the API.
@@ -263,7 +263,7 @@ def load_settings(env_file: str | None = None) -> Settings:
         student_base_port=_env_int("STUDENT_BASE_PORT", 9100),
         student_host=_env("STUDENT_HOST", "127.0.0.1"),
         student_reserved_ports=_env("STUDENT_RESERVED_PORTS", "9090,9091"),
-        student_args=_env("STUDENT_ARGS", "--flash-attn on --cache-ram 4096"),
+        student_args=_env("STUDENT_ARGS", "--flash-attn on --cache-ram 0"),
         admin_host=_env("ADMIN_HOST", "0.0.0.0"),
         admin_port=_env_int("ADMIN_PORT", 9091),
         admin_password=_env("ADMIN_PASSWORD", ""),

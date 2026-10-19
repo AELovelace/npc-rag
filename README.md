@@ -132,7 +132,7 @@ It is safe to run again: an existing `.env` keeps its own choices. `KillMode=con
    - `-np STUDENT_SLOTS`
    - `-c` = slots × `STUDENT_CTX_PER_SLOT`
    - `--n-gpu-layers 999 --device <card>`
-   - plus `STUDENT_ARGS` (default `--flash-attn on --cache-ram 4096`)
+   - plus `STUDENT_ARGS` (default `--flash-attn on --cache-ram 0`)
 4. **Waits until every copy's `/health` answers,** then points itself at them: `LLM_URL` becomes all the copies, and `LLM_CONCURRENCY` becomes `STUDENT_SLOTS`.
 5. **Keeps them running.** A watchdog restarts any copy that exits, waiting longer after each crash, up to 60 s. On Windows the copies sit in a job object, so they die with npc-rag, even after `Stop-Process -Force`. `data/student-fleet.json` cleans up any leftovers on the next start.
 6. **Reports on `/health`,** under `student_fleet`: the model, ports, cards, whether each copy is alive, and its restart count. `capacity.slots` is the total reply slots; the game server's pool reads it instead of llama.cpp's `/props`.
@@ -142,7 +142,12 @@ It is safe to run again: an existing `.env` keeps its own choices. `KillMode=con
 **Why several copies per card:** llama-server feeds its GPU from **one CPU thread**. On node A's RX 6800 XTs (Vulkan), that thread was pinned at 100% while the GPU waited, which capped one copy at about 90 generated tokens/s however many slots it had. Each extra copy brings its own thread.
 
 **What to avoid:**
-- **Keep the RAM prompt cache on** (`--cache-ram 4096`, the default). Every companion and resident has a long, fixed prompt start, and the cache restores it into any slot. With the speed-aware pool, it took the 100-player test from 4.7–5.7 s to 3.7–4.4 s typical (2026-10-18).
+- **Leave the RAM prompt cache off** (`--cache-ram 0`, the default since 2026-10-19).
+  - It froze both of node A's HIP copies mid-save under load: llama.cpp b9481, the log stops at `prompt_save`, and `/health` kept saying ok.
+  - LFM2's hybrid memory mostly misses it anyway: the log shows `forcing full prompt re-processing`.
+  - With HIP a prompt is read in about 0.1 s.
+  - It was worth about 25% on Vulkan (2026-10-18), where prompt reading was slow. Turn it back on only after a long soak test.
+- **Frozen copies restart themselves (2026-10-19).** llama-server answers `/health` from its HTTP thread even when its work loop is stuck. So the watchdog also asks each copy for `/slots` every 10 s, which needs the work loop. After 3 misses in a row (about 30 s; a fresh copy gets 3 minutes to load first), the copy is killed and restarted, and `/health` `student_fleet.copies[].hangs` counts it. Copies started with `--no-slots` can't be checked.
 - **Don't compress the KV cache** (`--cache-type-k/v`). It didn't help speed, and a 1.2B model's cache is tiny anyway.
 - **Measure before and after a change** with lidollquest `python/llama_concurrency_sweep.py http://127.0.0.1:9100` on the node itself (about 20 s), or the control page's **Run sweep**.
 
