@@ -151,3 +151,13 @@ def test_linux_prefers_a_hip_build_and_windows_a_vulkan_build(tmp_path, monkeypa
     linux = fleet_mod.find_llama_server("", patterns=pattern, prefer=("hip", "rocm", "vulkan"))
     windows = fleet_mod.find_llama_server("", patterns=pattern, prefer=("vulkan",))
     assert Path(linux).parent.parent.name == "hip" and Path(windows).parent.parent.name == "vulkan"
+
+
+def test_a_hip_build_that_sees_no_gpu_falls_back_to_vulkan(settings):
+    s = dataclasses.replace(settings, student_devices="auto")
+    seen = {"hip": ([], "ggml_cuda_init: failed to initialize ROCm: no ROCm-capable device is detected"),
+            "vulkan": ([{"name": "Vulkan0", "description": "RX 6800", "mib": 16368}], "")}
+    fleet = fleet_mod.StudentFleet(s)
+    assert fleet._detect(["hip", "vulkan"], probe=seen.get) == ("vulkan", ["Vulkan0"])
+    with pytest.raises(RuntimeError, match="no ROCm-capable device"):
+        fleet._detect(["hip"], probe=seen.get)

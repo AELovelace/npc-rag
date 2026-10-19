@@ -87,33 +87,44 @@ def _preference(path: str, prefer=PREFER) -> tuple:
     return (next((i for i, word in enumerate(prefer) if word in low), len(prefer)), path)
 
 
-def find_llama_server(configured: str = "", patterns=SEARCH, prefer=PREFER) -> str:
-    """LLAMA_SERVER if set, else llama-server on PATH, else the usual install folders (HIP preferred on Linux, Vulkan on Windows)."""
+def find_llama_servers(configured: str = "", patterns=SEARCH, prefer=PREFER) -> list[str]:
+    """Every usable llama-server, best first: just LLAMA_SERVER if set, else PATH, then the usual install folders by PREFER."""
     if configured:
         if not Path(configured).is_file():
             raise RuntimeError(f"LLAMA_SERVER={configured} does not exist")
-        return configured
+        return [configured]
     import glob
     import shutil
     found = shutil.which("llama-server") or shutil.which("llama-server.exe")
-    if found:
-        return found
     hits = sorted({h for p in patterns for h in glob.glob(p, recursive=True)}, key=lambda h: _preference(h, prefer))
-    if hits:
-        return hits[0]
+    servers = list(dict.fromkeys(([found] if found else []) + hits))
+    if servers:
+        return servers
     raise RuntimeError("STUDENT_FLEET=on but no llama-server was found. Set LLAMA_SERVER=<path to llama-server.exe> in .env "
                        "(looked on PATH and in: " + ", ".join(patterns) + ")")
 
 
-def list_devices(server: str, runner=subprocess.run) -> list[dict]:
-    """GPUs as llama-server itself names them (Vulkan0, CUDA0, ...); CPU entries are skipped."""
+def find_llama_server(configured: str = "", patterns=SEARCH, prefer=PREFER) -> str:
+    """LLAMA_SERVER if set, else llama-server on PATH, else the usual install folders (HIP preferred on Linux, Vulkan on Windows)."""
+    return find_llama_servers(configured, patterns, prefer)[0]
+
+
+def probe_devices(server: str, runner=subprocess.run) -> tuple[list[dict], str]:
+    """llama-server --list-devices: its GPUs (CPU entries skipped) and the raw output, which says why when there are none."""
     out = runner([server, "--list-devices"], capture_output=True, text=True, timeout=120)
+    text = f"{out.stdout}
+{out.stderr}"
     devices = []
-    for line in f"{out.stdout}\n{out.stderr}".splitlines():
+    for line in text.splitlines():
         m = DEVICE_LINE.match(line)
         if m and not m.group(1).upper().startswith("CPU"):
             devices.append({"name": m.group(1), "description": m.group(2), "mib": int(m.group(3))})
-    return devices
+    return devices, text.strip()
+
+
+def list_devices(server: str, runner=subprocess.run) -> list[dict]:
+    """GPUs as llama-server itself names them (Vulkan0, CUDA0, ...); CPU entries are skipped."""
+    return probe_devices(server, runner)[0]
 
 
 def port_free(port: int) -> bool:
@@ -273,13 +284,13 @@ class StudentFleet:
     def start(self, timeout: float = 600) -> "StudentFleet":
         global CURRENT
         from dataclasses import replace
-        self.settings = replace(self.settings, llama_server=find_llama_server(self.settings.llama_server))
-        s = self.settings
-        LOG.info("Student fleet using %s", s.llama_server)
-        self.spec = release(s.student_model)
-        self.model = self.model or ensure_student(s.student_model)
-        clean_leftovers(s.llama_server, self.pidfile)
-        devices = self.devices or self._detect()
+        servers = find_llama_servers(self.settings.llama_server)
+        self.spec = release(self.settings.student_model)
+        self.model = self.model or ensure_student(self.settings.student_model)
+        clean_leftovers(servers[0], self.pidfile)
+        server, devices = (servers[0], self.devices) if self.devices else self._detect(servers)
+        self.settings = s = replace(self.settings, llama_server=server)
+        LOG.info("Student fleet using %s on %s", s.llama_server, ",".join(devices))
         self.copies = plan(devices, s.student_copies_per_device, s.student_base_port, reserved=reserved_ports(s))
         self.logs.mkdir(parents=True, exist_ok=True)
         for copy in self.copies:
@@ -326,13 +337,24 @@ class StudentFleet:
                             "restarts": c.restarts, "last_exit": c.last_exit} for c in self.copies]}
 
     # -- internals ------------------------------------------------------------------------------------------------------
-    def _detect(self) -> list[str]:
+    def _detect(self, servers: list[str], probe=probe_devices) -> tuple[str, list[str]]:
+        """The first llama-server that sees a GPU and its devices; a HIP build that can't see the card falls back to Vulkan."""
         if self.settings.student_devices != "auto":
-            return [d for d in self.settings.student_devices.split(",") if d]
-        found = [d["name"] for d in list_devices(self.settings.llama_server)]
-        if not found:
-            raise RuntimeError(f"{self.settings.llama_server} --list-devices shows no GPU; set STUDENT_DEVICES (e.g. Vulkan0)")
-        return found
+            return servers[0], [d for d in self.settings.student_devices.split(",") if d]
+        why = []
+        for server in servers:
+            found, text = probe(server)
+            if found:
+                if why:
+                    LOG.warning("Using %s: %s", server, "; ".join(f"{w[0]} shows no GPU" for w in why))
+                return server, [d["name"] for d in found]
+            why.append((server, "
+    ".join(text.splitlines()[-8:]) or "(no output)"))
+        raise RuntimeError("no llama-server shows a GPU; set STUDENT_DEVICES (e.g. Vulkan0) or fix GPU access:
+" +
+                           "
+".join(f"  {s} --list-devices:
+    {w}" for s, w in why))
 
     def _spawn(self, copy: Copy) -> None:
         copy.log = self.logs / f"student-{copy.port}.log"
