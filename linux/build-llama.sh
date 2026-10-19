@@ -3,10 +3,10 @@
 #   /opt/llama.cpp/hip/bin/llama-server     ROCm HIP (preferred by npc-rag on Linux)
 #   /opt/llama.cpp/vulkan/bin/llama-server  RADV Vulkan (fallback / A-B comparison)
 # npc-rag finds both on its own (LLAMA_SERVER empty); set LLAMA_SERVER in .env to pin one.
-# Usage: sudo ./build-llama.sh            (LLAMA_TAG=b9481 GPU_TARGETS=gfx1030 by default)
-#        sudo LLAMA_TAG=master ./build-llama.sh
-#        sudo BUILDS=vulkan ./build-llama.sh
-#        sudo ROCM_SOURCE=amd ./build-llama.sh   (ROCm already installed from AMD's repo into /opt/rocm: newer than the archive)
+# Usage: sudo bash build-llama.sh            (LLAMA_TAG=b9481 GPU_TARGETS=gfx1030 by default)
+#        sudo LLAMA_TAG=master bash build-llama.sh
+#        sudo BUILDS=vulkan bash build-llama.sh
+#        sudo ROCM_SOURCE=amd bash build-llama.sh   (ROCm already installed from AMD's repo into /opt/rocm: newer than the archive)
 set -euo pipefail
 
 PREFIX="${PREFIX:-/opt/llama.cpp}"      # Install root.

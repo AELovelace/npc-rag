@@ -27,18 +27,65 @@ It can:
 - **Edit settings.** Only a whitelisted set of keys (student fleet, model limits, Decider, overflow, secrets). Secrets are write-only: the page only says whether they are set. Every save runs npc-rag's own settings check (`load_settings`) on the new file in a clean subprocess first; a bad value is refused and the file is left alone. The write is atomic, with a timestamped `.env.bak-*` beside it (newest 5 kept). Host, port and the admin password can't be changed from the page, so you can't lock yourself out.
 - **Restart npc-rag** with `systemctl --no-block restart npc-rag.service`. The polkit rule in `linux/` allows exactly that unit (start/stop/restart) for the `npcrag` user. On Windows, set `ADMIN_RESTART_CMD`.
 - **Run a speed sweep:** 1, half and all slots on every live local copy; tokens/s and seconds per reply. Players share those slots, so run it when the node is quiet.
+- **Check & install updates:** fetch the checkout's tracked branch, install newer commits, then restart RAG and the control page. Progress and the previous/target revisions stay visible; sign in again after the control page reloads.
+
+For an existing Ubuntu installation, first bring this code onto the node, then run
+`sudo bash /opt/npc-rag/linux/install-updater.sh` once. It installs the dedicated
+`npc-rag-update.service` and the narrow polkit permissions, and restarts only the
+control page. It does not rebuild Python, ROCm or the student models. New installs
+through `linux/install-ubuntu.sh` include the updater automatically.
+
+The updater is `python/update_repo.py`. Manual commands, run as the checkout owner:
+
+```bash
+cd /opt/npc-rag
+sudo -u npcrag .venv/bin/python python/update_repo.py --check
+sudo -u npcrag .venv/bin/python python/update_repo.py --install --restart-services
+```
+
+The button uses the existing admin login and CSRF header; it cannot select arbitrary
+commands, remotes or branches. A separate oneshot service survives both web-service
+restarts. Settings writes, restarts and speed sweeps are blocked while that update job
+runs. `data/repo-update.json` stores its progress/result, and the admin audit records
+who requested it. Inspect `journalctl -u npc-rag-update.service` for job status.
+
+Updates are fast-forward only. Tracked local code edits (including a manually applied
+Decider patch), local commits ahead of upstream, divergent history, or untracked files
+that would be overwritten stop installation; there is no reset, stash, clean or forced
+checkout. Resolve those edits deliberately before updating. Legacy tracked
+`data/admin-audit.jsonl` additions are preserved, and upstream replacements of that file,
+the node's `.env`, models, indexes or venv are refused. The `npcrag` user needs a writable
+checkout and Git access to its configured upstream; no credentials are accepted through
+the page. Commit/publish changes to the upstream branch before expecting nodes to find them.
+
+Ordinary code updates leave installed packages alone. Changed `requirements.txt` or
+`requirements-decider.txt` files trigger dependency resolution and installation with the
+existing `llama-cpp-python` version constrained and without upgrade/force-reinstall flags.
+This preserves the custom ROCm/CUDA/Vulkan build; a conflicting native-version change
+requires manual backend installation. Changes to systemd units or polkit rules likewise
+require a manual update and `linux/install-ubuntu.sh`, because the updater runs unprivileged.
+Dependency or readiness failures are reported with the old/new revisions and do not
+silently reset code or roll back packages. After restart, readiness must report a healthy
+RAG index, reply model, classifier and every managed student copy. A failed update may
+have installed code already; inspect its result before retrying.
+
+Validation: `.venv/bin/python -m pytest tests/test_repo_update.py tests/test_admin.py -q`
+uses disposable Git remotes and mocked service actions. It covers checks, no-op updates,
+fast-forwards, conflicts, protected data, locking, native dependency preservation,
+authentication/CSRF, duplicate jobs and interrupted status. Real Linux systemd and ROCm
+readiness still require acceptance on the deployed node.
 
 **Security.** Sign-in is `ADMIN_PASSWORD` only, never `NPC_API_KEY`. The page refuses to start without 8+ characters. The session cookie is HMAC-signed, HttpOnly, SameSite=Strict, and lasts 12 h (restarting the page signs everyone out). Five wrong passwords per address per 5 minutes means a 429. Every POST also needs the page's own `X-NPC-Admin` header, which a cross-site form can't send. Each action is logged to `data/admin-audit.jsonl` with key names only, never values. The page is plain HTTP: keep 9091 on the LAN (or put it behind TLS).
 
 **Install on Ubuntu 26.04** (as root):
 ```bash
 git clone https://github.com/AELovelace/npc-rag.git /opt/npc-rag
-/opt/npc-rag/linux/build-llama.sh       # llama-server: ROCm HIP (gfx1030) + RADV Vulkan into /opt/llama.cpp
-/opt/npc-rag/linux/install-ubuntu.sh    # user, Python 3.12 venv (+ Decider), .env, systemd units, polkit rule, ufw
+bash /opt/npc-rag/linux/build-llama.sh     # llama-server: ROCm HIP (gfx1030) + RADV Vulkan into /opt/llama.cpp
+bash /opt/npc-rag/linux/install-ubuntu.sh    # user, Python 3.12 venv (+ Decider), .env, systemd units, polkit rule, ufw
 ```
 `build-llama.sh`:
 - gets ROCm from Ubuntu's own archive (`apt install rocm`). That was ROCm 7.1 at 26.04's launch, a few releases behind AMD.
-  - For newer ROCm, run AMD's installer first, then `ROCM_SOURCE=amd ./build-llama.sh`.
+  - For newer ROCm, run AMD's installer first, then `sudo ROCM_SOURCE=amd bash build-llama.sh`.
   - If HIP can't build, it says so and still builds Vulkan. npc-rag runs fine on Vulkan alone.
 - `BUILDS=vulkan` skips HIP. `LLAMA_TAG` (default `b9481`) and `GPU_TARGETS` (default `gfx1030`, the 6800 XT) pick the build.
 
@@ -559,6 +606,18 @@ Auto excludes CPU/BLAS and integrated GPUs, deduplicating known physical device 
 multiple backends expose the same card. Explicit names can opt into an integrated GPU.
 No visible dedicated GPU, unknown names or any worker failing to load prevents GPU-mode
 startup with an error. `DECIDER_GPU_LAYERS=0` restores the original single CPU worker.
+
+ROCm Decider workers explicitly disable flash attention when constructing their native
+context. On the RX 6800 XT / gfx1030 node, the Python backend's automatic flash-attention
+selection aborted during the startup decision with `GGML_ASSERT(max_blocks_per_sm > 0)`
+in `fattn-common.cuh`. GPU discovery and all four student copies were already healthy.
+This compatibility setting keeps Decider GPU offload and per-card pinning enabled; it
+does not change `STUDENT_ARGS`, CUDA/Vulkan workers, model weights or prompt scoring.
+The override is confined to context creation in each isolated worker and restored even
+if creation fails. Look for `flash attention disabled for ROCm compatibility` followed
+by successful worker readiness. Local regression checks cover both task types and hook
+restoration; inference on the affected ROCm host must still be verified after deployment.
+See the [upstream RDNA2 flash-attention report](https://github.com/ggml-org/llama.cpp/issues/24672).
 
 `/health.classification` reports `execution=gpu-process-pool`, total `capacity`,
 `healthy_capacity`, `in_flight`, `queued`, and each worker's device name, card description,

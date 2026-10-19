@@ -1,11 +1,13 @@
-// Lets the npcrag user (the control page) start, stop and restart npc-rag.service, and nothing else.
+// Narrow service permissions for the control page and its separate repository updater.
 // Installed to /etc/polkit-1/rules.d/ by install-ubuntu.sh.
 polkit.addRule(function (action, subject) {
     if (action.id == "org.freedesktop.systemd1.manage-units" &&
-        action.lookup("unit") == "npc-rag.service" &&
         subject.user == "npcrag") {
         var verb = action.lookup("verb");
-        if (verb == "restart" || verb == "start" || verb == "stop") {
+        var unit = action.lookup("unit");
+        if ((unit == "npc-rag.service" && (verb == "restart" || verb == "start" || verb == "stop")) ||
+            (unit == "npc-rag-admin.service" && verb == "restart") ||
+            (unit == "npc-rag-update.service" && verb == "start")) {
             return polkit.Result.YES;
         }
     }

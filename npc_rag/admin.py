@@ -206,6 +206,29 @@ def service_state(unit: str) -> dict:
     return {"available": True, "unit": unit, **info}
 
 
+def update_status() -> dict:
+    """Persistent job result plus systemd state, including interrupted or killed updates."""
+    result = {"available": False, "running": False, "phase": "idle", "message": "Repository updates require the Linux updater service."}
+    if not LINUX or not shutil.which("systemctl"):
+        return result
+    code, out = _run(["systemctl", "show", "npc-rag-update.service", "--property=LoadState,ActiveState,SubState,Result"], timeout=5)
+    unit = dict(line.split("=", 1) for line in out.splitlines() if "=" in line) if code == 0 else {}
+    result["available"] = unit.get("LoadState") == "loaded" and (ROOT / "python/update_repo.py").is_file()
+    if result["available"]:
+        result["message"] = "Check the tracked Git branch and install updates when available."
+    try:
+        saved = json.loads((ROOT / "data/repo-update.json").read_text(encoding="utf-8"))
+        result.update({k: saved[k] for k in ("phase", "message", "branch", "current", "target", "installed", "behind", "started_utc") if k in saved})
+    except (OSError, ValueError, TypeError):
+        pass  # Only known summary fields leave this endpoint, never repository config or command output.
+    result["running"] = unit.get("ActiveState") in ("activating", "active", "reloading", "deactivating")
+    if not result["running"] and result["phase"] in ("checking", "installing", "dependencies", "restarting", "restarting_admin"):
+        result.update(phase="interrupted", message="The updater stopped before completion. Inspect journalctl -u npc-rag-update.service.")
+    elif unit.get("ActiveState") == "failed" and result["phase"] != "failed":
+        result.update(phase="failed", message="The updater service failed. Inspect journalctl -u npc-rag-update.service.")
+    return result
+
+
 def gpu_state() -> dict:
     """Best-effort GPU table from rocm-smi or nvidia-smi; {} when neither is installed."""
     if shutil.which("rocm-smi"):
@@ -297,6 +320,20 @@ def create_admin_app(s: Settings, env_file: str | None = None, audit_file: Path 
     rag = f"http://{'127.0.0.1' if s.host in ('', '0.0.0.0', '::') else s.host}:{s.port}"  # npc-rag on this machine.
     sweep: dict = {"running": False, "results": [], "error": None, "at": None}
     tasks: set = set()  # Holds the running sweep task so it isn't garbage-collected mid-run.
+    update_gate = asyncio.Lock()
+    update_accepted_until = 0.0  # Cover the short gap between systemd accepting the job and activating its unit.
+
+    async def repository_state():
+        view = await asyncio.to_thread(update_status)
+        if s.admin_service != "npc-rag.service" or s.port != 9092:
+            view.update(available=False, message="The updater unit supports npc-rag.service on port 9092; use the CLI for custom deployments.")
+        if time.monotonic() < update_accepted_until:
+            view["running"] = True
+        return view
+
+    async def no_update():
+        if update_gate.locked() or (await repository_state())["running"]:
+            raise HTTPException(409, "A repository update is running; wait before changing settings, restarting or sweeping.")
 
     def audit(request: Request, action: str, **extra) -> None:
         """One line per admin action: when, from where, what (never values)."""
@@ -376,8 +413,32 @@ def create_admin_app(s: Settings, env_file: str | None = None, audit_file: Path 
             health = {"error": f"npc-rag not answering on {s.port}: {type(error).__name__}"}
         service, gpus, host = await asyncio.gather(asyncio.to_thread(service_state, s.admin_service),
                                                    asyncio.to_thread(gpu_state), asyncio.to_thread(host_state))
-        return {"health": health, "service": service, "gpus": gpus, "host": host, "sweep": sweep,
+        return {"health": health, "service": service, "gpus": gpus, "host": host, "sweep": sweep, "update": await repository_state(),
                 "restart_available": restart_command(s) is not None, "env_file": str(env)}
+
+    @app.get("/api/update")
+    async def repository_status(request: Request):
+        require(request)
+        return await repository_state()
+
+    @app.post("/api/update")
+    async def repository_update(request: Request):
+        nonlocal update_accepted_until
+        require(request, post=True)
+        if update_gate.locked():
+            raise HTTPException(409, "An update request is already being started")
+        async with update_gate:
+            view = await repository_state()
+            if not view["available"]:
+                raise HTTPException(400, view["message"])
+            if view["running"] or sweep["running"]:
+                raise HTTPException(409, "Wait for the current update or speed sweep to finish")
+            code, _ = await asyncio.to_thread(_run, ["systemctl", "--no-ask-password", "--no-block", "start", "npc-rag-update.service"])
+            audit(request, "repository_update", code=code)
+            if code:
+                raise HTTPException(502, "Could not start the updater. Install its systemd unit and polkit rule with linux/install-ubuntu.sh.")
+            update_accepted_until = time.monotonic() + 10
+            return JSONResponse({"ok": True, "message": "Checking the tracked branch; available updates will be installed."}, status_code=202)
 
     @app.get("/api/logs")
     async def logs(request: Request, lines: int = 200):
@@ -392,6 +453,7 @@ def create_admin_app(s: Settings, env_file: str | None = None, audit_file: Path 
     @app.post("/api/settings")
     async def set_settings(request: Request):
         require(request, post=True)
+        await no_update()
         body = await request.json()
         try:
             changes = check_changes(body.get("changes") if isinstance(body, dict) else None)
@@ -404,6 +466,7 @@ def create_admin_app(s: Settings, env_file: str | None = None, audit_file: Path 
     @app.post("/api/restart")
     async def restart(request: Request):
         require(request, post=True)
+        await no_update()
         cmd = restart_command(s)
         if not cmd:
             raise HTTPException(400, "set ADMIN_RESTART_CMD to restart npc-rag from this page on Windows")
@@ -416,6 +479,7 @@ def create_admin_app(s: Settings, env_file: str | None = None, audit_file: Path 
     @app.post("/api/sweep")
     async def start_sweep(request: Request):
         require(request, post=True)
+        await no_update()
         if sweep["running"]:
             raise HTTPException(409, "a sweep is already running")
         try:

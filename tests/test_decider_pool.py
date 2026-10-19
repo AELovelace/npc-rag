@@ -105,6 +105,33 @@ def test_native_pinning_restricts_device_list_and_restores_loader_on_error(monke
             pass
 
 
+@pytest.mark.parametrize("name", ["ROCm0", "CUDA0", "Vulkan0"])
+@pytest.mark.parametrize("fails", [False, True])
+def test_rocm_decider_context_disables_flash_attention_and_restores_api(monkeypatch, name, fails):
+    calls = []
+
+    def original_context(model, params):
+        calls.append((model, params.flash_attn_type, params.n_ctx))
+        if fails:
+            raise RuntimeError("context failure")
+        return "context"
+
+    original_load = lambda path, params: "model"
+    llama = SimpleNamespace(llama_model_load_from_file=original_load, llama_init_from_model=original_context,
+                            LLAMA_SPLIT_MODE_NONE=0, LLAMA_FLASH_ATTN_TYPE_DISABLED=0)
+    row = card(0, name=name, pointer=123)
+    monkeypatch.setattr("npc_rag.decider_devices.NativeDevices", lambda: SimpleNamespace(llama=llama, rows=lambda: [row]))
+    try:
+        with pinned_device(name):
+            params = SimpleNamespace(flash_attn_type=-1, n_ctx=4096)
+            assert llama.llama_init_from_model("model", params) == "context"
+    except RuntimeError:
+        assert fails
+    assert calls == [("model", 0 if name.startswith("ROCm") else -1, 4096)]
+    assert llama.llama_init_from_model is original_context
+    assert llama.llama_model_load_from_file is original_load  # Failed native context creation must also restore both hooks.
+
+
 @pytest.mark.parametrize("value", ["", "CUDA0,", "CUDA0,CUDA0", "auto,CUDA0"])
 def test_invalid_device_selection(settings, value):
     with pytest.raises(ValueError, match="DECIDER_GPU_DEVICES"):

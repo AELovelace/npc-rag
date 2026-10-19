@@ -80,7 +80,7 @@ class ProcessWorker:
             result = await asyncio.shield(self.pending)
         except BrokenProcessPool:
             raise RuntimeError(f"Decider worker {self.device['name']} exited during model loading/startup inference; "
-                               "check the preceding native CUDA/Vulkan error in the RAG log") from None
+                               "check the preceding native CUDA/ROCm/Vulkan error in the RAG log") from None
         self.metadata, self.device, self.pid = result["metadata"], result["device"], result["pid"]
         self.pending = None
         self.healthy = True

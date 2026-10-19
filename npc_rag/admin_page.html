@@ -43,6 +43,11 @@ input,select{font:inherit;width:100%;padding:6px 8px;border:1px solid var(--line
 
   <div class="card"><h2>Machine</h2><div class="scroll"><table id="machine"></table></div></div>
 
+  <div class="card"><h2>Repository updates</h2>
+   <p class="soft">Checks this node's tracked branch and installs newer commits. Local settings and GPU builds are preserved; local code edits block the update. Replies pause while models reload, and the control page will ask you to sign in again.</p>
+   <div class="row"><button id="updatebtn" disabled>Check &amp; install updates</button><span id="updatestate" role="status" aria-live="polite" class="soft">Checking updater availability...</span></div>
+   <p id="updaterevision" class="soft"></p></div>
+
   <div class="card"><h2>Speed sweep</h2>
    <p class="soft">Sends a short test prompt to every local copy at 1, half and all slots. Players share those slots, so run it when the node is quiet.</p>
    <div class="row"><button id="sweepbtn">Run sweep</button><span id="sweepstate" class="soft"></span></div>
@@ -102,10 +107,16 @@ async function refresh(){ // Status every 10 s.
  else if(g.cards)Object.entries(g.cards).forEach(([card,v])=>rows.push([card,Object.entries(v).map(([k,x])=>k+': '+x).join(', ')])); // rocm-smi JSON as-is.
  else rows.push(['GPUs','no rocm-smi / nvidia-smi']);
  table('machine',['',''],rows);
- const sw=s.sweep||{};$('sweepbtn').disabled=!!sw.running;
+ const up=s.update||{};
+ $('updatebtn').disabled=!up.available||!!up.running||!!s.sweep?.running;
+ $('updatestate').textContent=(up.running?'Working: ':'')+(up.message||'Repository updater is not installed.');
+ $('updatestate').className=up.phase==='failed'||up.phase==='interrupted'?'bad':(up.phase==='complete'||up.phase==='current'?'ok':'soft');
+ $('updaterevision').textContent=[up.branch,up.current?'From '+up.current.slice(0,12):'',up.target?'Target '+up.target.slice(0,12):''].filter(Boolean).join(' / ');
+ $('save').disabled=!!up.running;
+ const sw=s.sweep||{};$('sweepbtn').disabled=!!sw.running||!!up.running;
  $('sweepstate').textContent=sw.running?'running…':(sw.error?'error: '+sw.error:(sw.at?'last run '+sw.at:''));
  table('sweep',['Copy','Replies at once','Tokens/s total','Seconds per reply'],(sw.results||[]).map(r=>[r.url,r.level,r.tok_s,r.reply_s]));
- $('restart').disabled=!s.restart_available;$('restart').title=s.restart_available?'':'Set ADMIN_RESTART_CMD';
+ $('restart').disabled=!s.restart_available||!!up.running;$('restart').title=s.restart_available?'':'Set ADMIN_RESTART_CMD';
  $('raw').textContent=JSON.stringify(h,null,1);show(true);
 }
 
@@ -138,6 +149,11 @@ $('login').addEventListener('submit',async e=>{e.preventDefault();$('loginmsg').
  catch(err){$('loginmsg').textContent=err.message;}});
 $('logout').onclick=async()=>{await fetch('/api/logout',{method:'POST',headers:H});show(false);};
 $('save').onclick=save;
+$('updatebtn').onclick=async()=>{
+ $('updatebtn').disabled=true;$('updatestate').textContent='Starting repository check...';
+ try{const r=await api('/api/update',{method:'POST',headers:H});$('updatestate').textContent=r.message;}
+ catch(e){$('updatestate').textContent=e.message;$('updatestate').className='bad';$('updatebtn').disabled=false;}
+}; // One explicit click checks and installs; progress is polled without holding a long HTTP request open.
 $('restart').onclick=async()=>{if(!confirm('Restart npc-rag now? Replies pause until it is back (the student copies reload too).'))return;
  try{await api('/api/restart',{method:'POST',headers:H});note('Restart sent.','ok');}catch(e){note(e.message,'bad');}};
 $('sweepbtn').onclick=async()=>{try{await api('/api/sweep',{method:'POST',headers:H});$('sweepstate').textContent='running…';}catch(e){$('sweepstate').textContent=e.message;}};

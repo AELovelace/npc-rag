@@ -1,0 +1,17 @@
+# Invoked by the authenticated control page; independent of both web-service cgroups.
+[Unit]
+Description=Check and install npc-rag repository updates
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=npcrag
+Group=npcrag
+WorkingDirectory=/opt/npc-rag
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/npc-rag/.venv/bin/python /opt/npc-rag/python/update_repo.py --install --restart-services
+TimeoutStartSec=30min
+ProtectSystem=full
+PrivateTmp=yes
+UMask=0077

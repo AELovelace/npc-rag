@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # One-time Ubuntu 26.04 LTS setup for an npc-rag node. Run from the checkout as root:
 #   sudo git clone https://github.com/AELovelace/npc-rag.git /opt/npc-rag
-#   sudo /opt/npc-rag/linux/build-llama.sh        # llama-server builds (HIP + Vulkan) into /opt/llama.cpp
-#   sudo /opt/npc-rag/linux/install-ubuntu.sh     # this script
+#   sudo bash /opt/npc-rag/linux/build-llama.sh      # llama-server builds (HIP + Vulkan) into /opt/llama.cpp
+#   sudo bash /opt/npc-rag/linux/install-ubuntu.sh     # this script
 # Port layout: 9090 left free (Cockpit, if you ever add it), 9091 the npc-rag control page, 9092 the npc-rag API,
 # 9100+ the student llama-server copies (127.0.0.1 only, never opened in the firewall).
 # Safe to run again: it keeps an existing .env and only adds what is missing.
@@ -92,7 +92,7 @@ chown -R "$SERVICE_USER:$SERVICE_USER" "$ROOT"
 chmod 600 "$ENV"   # Keys live here: only the service user reads it.
 
 # 5. systemd units (paths rewritten to this checkout) and the polkit rule that lets the page restart npc-rag.
-for unit in npc-rag.service npc-rag-admin.service; do
+for unit in npc-rag.service npc-rag-admin.service npc-rag-update.service; do
   sed -e "s#/opt/npc-rag#$ROOT#g" -e "s#^User=npcrag#User=$SERVICE_USER#" -e "s#^Group=npcrag#Group=$SERVICE_USER#" \
     "$ROOT/linux/$unit" > "/etc/systemd/system/$unit"
 done

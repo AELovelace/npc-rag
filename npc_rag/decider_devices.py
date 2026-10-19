@@ -1,6 +1,7 @@
 """Device enumeration and model pinning for the pinned llama-cpp-python 0.3.36 ABI."""
 from contextlib import contextmanager
 import ctypes
+import logging
 from pathlib import Path
 
 
@@ -24,7 +25,7 @@ class NativeDevices:
         if llama_cpp.__version__ != "0.3.36":
             raise RuntimeError("Automatic Decider GPU assignment requires the pinned llama-cpp-python 0.3.36 wheel")
         self.llama = llama_cpp
-        llama_cpp.llama_backend_init()  # Loads the installed wheel's CUDA/Vulkan backend before enumeration.
+        llama_cpp.llama_backend_init()  # Loads the installed wheel's CUDA/ROCm/Vulkan backend before enumeration.
         folder = Path(llama_cpp.__file__).parent / "lib"
         self.libs = [load_shared_library(name, folder) for name in ("ggml", "ggml-base")]
         self.count = self._bind("ggml_backend_dev_count", [], ctypes.c_size_t)
@@ -93,6 +94,8 @@ def pinned_device(name):
     llama = registry.llama
     devices = (ctypes.c_void_p * 2)(row["pointer"], None)  # Native ABI requires a NULL-terminated device list.
     original = llama.llama_model_load_from_file
+    rocm = row["name"].startswith("ROCm")
+    original_context = llama.llama_init_from_model if rocm else None
 
     def load(path, params):
         params.devices = ctypes.cast(devices, ctypes.c_void_p).value
@@ -100,8 +103,17 @@ def pinned_device(name):
         params.main_gpu = 0  # Index in the restricted one-device list, not the host-wide GPU index.
         return original(path, params)
 
+    def context(model, params):
+        params.flash_attn_type = llama.LLAMA_FLASH_ATTN_TYPE_DISABLED  # HIP flash-attention auto selection can abort on RDNA2 during Decider decode.
+        return original_context(model, params)  # Keep GPU layers, device pinning and the remaining context settings intact.
+
     llama.llama_model_load_from_file = load
+    if rocm:
+        llama.llama_init_from_model = context
+        logging.getLogger(__name__).info("Decider %s: flash attention disabled for ROCm compatibility; GPU offload retained", name)
     try:
         yield {k: v for k, v in row.items() if k != "pointer"}
     finally:
         llama.llama_model_load_from_file = original  # Never change inference or other models' load behavior.
+        if rocm:
+            llama.llama_init_from_model = original_context  # The override exists only while this worker creates its Decider context.

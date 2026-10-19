@@ -111,3 +111,46 @@ def test_linux_restart_is_systemctl_no_block(settings, monkeypatch):
     monkeypatch.setattr(admin, "LINUX", True)
     cmd = admin.restart_command(dataclasses.replace(settings, admin_restart_cmd="", admin_service="npc-rag.service"))
     assert cmd == ["systemctl", "--no-ask-password", "--no-block", "restart", "npc-rag.service"]
+
+
+def test_update_requires_login_csrf_and_rejects_duplicate_jobs(settings, tmp_path, monkeypatch):
+    monkeypatch.setattr(admin, "update_status", lambda: {"available": True, "running": False, "phase": "idle", "message": "Ready"})
+    ran = []
+    monkeypatch.setattr(admin, "_run", lambda cmd, timeout=10: (ran.append(cmd), (0, ""))[1])
+    app = admin.create_admin_app(dataclasses.replace(settings, admin_password=PASSWORD, port=9092, admin_service="npc-rag.service"),
+                                 str(tmp_path / ".env"), audit_file=tmp_path / "audit.jsonl")
+    with TestClient(app) as client:
+        assert client.get("/api/update").status_code == 401
+        assert client.post("/api/update", headers=POST).status_code == 401
+        login(client)
+        assert client.post("/api/update").status_code == 403
+        assert client.get("/api/update").json()["available"]
+        assert client.post("/api/update", headers=POST).status_code == 202
+        assert ran == [["systemctl", "--no-ask-password", "--no-block", "start", "npc-rag-update.service"]]
+        assert client.post("/api/update", headers=POST).status_code == 409
+        assert client.post("/api/restart", headers=POST).status_code == 409
+        assert client.post("/api/settings", json={"changes": {"STUDENT_FLEET": "on"}}, headers=POST).status_code == 409
+        assert client.post("/api/sweep", headers=POST).status_code == 409
+    assert "repository_update" in (tmp_path / "audit.jsonl").read_text()
+
+
+def test_update_reports_missing_unit_without_running_commands(page, monkeypatch):
+    client, _, _ = page
+    monkeypatch.setattr(admin, "update_status", lambda: {"available": False, "running": False, "message": "Missing updater service"})
+    monkeypatch.setattr(admin, "_run", lambda *args, **kwargs: pytest.fail("must not launch anything"))
+    login(client)
+    assert client.post("/api/update", headers=POST).status_code == 400
+
+
+@pytest.mark.parametrize("active,phase,expected", [("activating", "installing", "installing"), ("inactive", "installing", "interrupted"), ("failed", "current", "failed"), ("inactive", "complete", "complete")])
+def test_update_status_tracks_the_separate_job_and_detects_interruption(tmp_path, monkeypatch, active, phase, expected):
+    (tmp_path / "python").mkdir(); (tmp_path / "data").mkdir()
+    (tmp_path / "python/update_repo.py").write_text("# fixture")
+    (tmp_path / "data/repo-update.json").write_text(json.dumps({"phase": phase, "message": "fixture", "secret": "do-not-expose"}))
+    monkeypatch.setattr(admin, "ROOT", tmp_path)
+    monkeypatch.setattr(admin, "LINUX", True)
+    monkeypatch.setattr(admin.shutil, "which", lambda name: name)
+    monkeypatch.setattr(admin, "_run", lambda *args, **kwargs: (0, f"LoadState=loaded\nActiveState={active}\n"))
+    result = admin.update_status()
+    assert result["available"] and result["running"] == (active == "activating")
+    assert result["phase"] == expected and "secret" not in result
