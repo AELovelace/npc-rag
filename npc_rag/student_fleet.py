@@ -378,8 +378,9 @@ class StudentFleet:
         while waiting:
             for copy in list(waiting):
                 if copy.process.poll() is not None:
+                    tail = copy.log.read_text(encoding="utf-8", errors="replace").splitlines()[-15:] if copy.log else []
                     raise RuntimeError(f"llama-server on {copy.device}:{copy.port} exited with {copy.process.returncode} "
-                                       f"while loading; see {copy.log}")
+                                       f"while loading; see {copy.log}:\n    " + "\n    ".join(tail))
                 if self._ready(copy):
                     waiting.remove(copy)
             if waiting and time.monotonic() > deadline:

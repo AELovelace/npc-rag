@@ -81,6 +81,8 @@ class MultitaskClassifier(DeciderClassifier):
         from decider.engine_gguf import GGUFEngine
         from .native_logging import install_native_error_logging
         install_native_error_logging(llama_cpp)
+        from .native_flash import set_flash_attention
+        set_flash_attention(llama_cpp, self.settings.decider_flash_attn)
         self._model_source, self._gguf_file = str(folder), gguf
         self._model = GGUFEngine(str(folder / gguf), str(folder),
                                 n_gpu_layers=self.settings.decider_gpu_layers,

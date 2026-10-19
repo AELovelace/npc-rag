@@ -130,6 +130,7 @@ class Settings:
     decider_gpu_layers: int = 0          # CPU by default; -1 offloads all layers with a compatible build.
     decider_gpu_devices: str = "auto"    # GPU mode: one worker per detected card, or explicit CUDA0,Vulkan0 names.
     decider_context: int = 4096          # Entire prompt capacity, including the decision instructions.
+    decider_flash_attn: str = "auto"     # auto|on|off; off avoids the llama-cpp-python 0.3.36 HIP flash-attention abort on RDNA2.
     participation_enabled: bool = False  # Opt-in JOIN/QUIET endpoint, served on this same HTTP port.
     participation_model: str = 'shared'  # Reuse the combined routing pool without another model allocation.
     participation_timeout: float = 10.0
@@ -165,6 +166,8 @@ class Settings:
             raise ValueError("DECIDER_THREADS must be 1-64 and DECIDER_GPU_LAYERS must be -1 through 256")
         if not 2048 <= self.decider_context <= 32768:
             raise ValueError("DECIDER_CONTEXT must be 2048-32768 tokens")
+        if self.decider_flash_attn not in ("auto", "on", "off"):
+            raise ValueError("DECIDER_FLASH_ATTN must be auto, on or off")
         devices = self.decider_gpu_devices.split(",")
         if (not all(d.strip() and d == d.strip() for d in devices) or len(set(devices)) != len(devices)
                 or ("auto" in devices and len(devices) != 1)):
@@ -244,6 +247,7 @@ def load_settings(env_file: str | None = None) -> Settings:
         decider_gpu_layers=_env_int("DECIDER_GPU_LAYERS", 0),
         decider_gpu_devices=",".join(d.strip() for d in _env("DECIDER_GPU_DEVICES", "auto").split(",")),
         decider_context=_env_int("DECIDER_CONTEXT", 4096),
+        decider_flash_attn=_env("DECIDER_FLASH_ATTN", "auto").lower(),
         participation_enabled=_env_bool('PARTICIPATION_ENABLED'),
         participation_model=_env('PARTICIPATION_MODEL', 'shared'),
         participation_timeout=_positive_float('PARTICIPATION_TIMEOUT', 10.0),

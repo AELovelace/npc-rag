@@ -94,6 +94,8 @@ class DeciderClassifier:
                 raise RuntimeError("Install requirements-decider.txt in the RAG environment before enabling Decider") from exc
             from .native_logging import install_native_error_logging
             install_native_error_logging(llama_cpp)
+            from .native_flash import set_flash_attention
+            set_flash_attention(llama_cpp, self.settings.decider_flash_attn)
             factory = create_routing_decider
         else:
             factory = self._factory  # Tests substitute the native model without downloading any weights.
