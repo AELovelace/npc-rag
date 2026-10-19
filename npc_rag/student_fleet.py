@@ -112,8 +112,7 @@ def find_llama_server(configured: str = "", patterns=SEARCH, prefer=PREFER) -> s
 def probe_devices(server: str, runner=subprocess.run) -> tuple[list[dict], str]:
     """llama-server --list-devices: its GPUs (CPU entries skipped) and the raw output, which says why when there are none."""
     out = runner([server, "--list-devices"], capture_output=True, text=True, timeout=120)
-    text = f"{out.stdout}
-{out.stderr}"
+    text = f"{out.stdout}\n{out.stderr}"
     devices = []
     for line in text.splitlines():
         m = DEVICE_LINE.match(line)
@@ -348,13 +347,9 @@ class StudentFleet:
                 if why:
                     LOG.warning("Using %s: %s", server, "; ".join(f"{w[0]} shows no GPU" for w in why))
                 return server, [d["name"] for d in found]
-            why.append((server, "
-    ".join(text.splitlines()[-8:]) or "(no output)"))
-        raise RuntimeError("no llama-server shows a GPU; set STUDENT_DEVICES (e.g. Vulkan0) or fix GPU access:
-" +
-                           "
-".join(f"  {s} --list-devices:
-    {w}" for s, w in why))
+            why.append((server, "\n    ".join(text.splitlines()[-8:]) or "(no output)"))
+        raise RuntimeError("no llama-server shows a GPU; set STUDENT_DEVICES (e.g. Vulkan0) or fix GPU access:\n" +
+                           "\n".join(f"  {s} --list-devices:\n    {w}" for s, w in why))
 
     def _spawn(self, copy: Copy) -> None:
         copy.log = self.logs / f"student-{copy.port}.log"
