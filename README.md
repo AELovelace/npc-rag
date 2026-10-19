@@ -1,5 +1,61 @@
 # npc-rag: the LiDollQuest tutorial NPC
 
+## Ubuntu 26.04 nodes: port layout, control page and install (2026-10-19)
+
+Linux AI nodes run **Ubuntu 26.04 LTS** (target: 26.04.1). Fedora is no longer supported for AI nodes. The game server's own host is a separate machine and is unaffected.
+
+**Ports.** The control page took 9091, so the layout moved:
+
+| Port | What | Reachable from |
+|---|---|---|
+| 9090 | kept free (old Sakura copies on Windows; Cockpit if you ever install it) | — |
+| 9091 | **npc-rag control page** (`python -m npc_rag admin`) | the LAN |
+| 9092 | npc-rag API (the game server calls this) | the LAN |
+| 9100+ | the student llama-server copies (`STUDENT_HOST=127.0.0.1`) | this machine only |
+
+ufw opens only 9091 and 9092. Copies never take 9090, 9091 or 9092, even with an old `STUDENT_BASE_PORT=9090` (`STUDENT_RESERVED_PORTS` + `NPC_PORT` + `ADMIN_PORT` are skipped). The game server no longer has to reach a model port: `/health` reports `capacity.slots` (every local copy's slots added up) and the pool sizes itself from that.
+
+**What changes on Windows nodes after a pull:** the copies move to `127.0.0.1:9100+` too. Sweeps from another machine (`llama_concurrency_sweep.py http://<node>:9090`) stop working; run the sweep on the node itself against `http://127.0.0.1:9100`, or use the control page's **Run sweep** button. Set `STUDENT_HOST=0.0.0.0` and `STUDENT_BASE_PORT=9090` in `.env` to keep the old behaviour.
+
+**The control page (9091).** It runs as its own service (`npc-rag-admin.service`), so it stays up while npc-rag restarts. It shows:
+- tiles for npc-rag, the main model, reply slots, the student model, copies alive, the Decider, the systemd state and the restart count;
+- one row per student copy: card, port, alive, restarts, last exit code, requests in flight, recent seconds per reply;
+- the machine: load, free memory and disk, GPUs from `rocm-smi` (or `nvidia-smi`);
+- the npc-rag journal tail and the raw `/health`.
+
+It can:
+- **Edit settings.** Only a whitelisted set of keys (student fleet, model limits, Decider, overflow, secrets). Secrets are write-only: the page only says whether they are set. Every save runs npc-rag's own settings check (`load_settings`) on the new file in a clean subprocess first; a bad value is refused and the file is left alone. The write is atomic, with a timestamped `.env.bak-*` beside it (newest 5 kept). Host, port and the admin password can't be changed from the page, so you can't lock yourself out.
+- **Restart npc-rag** with `systemctl --no-block restart npc-rag.service`. The polkit rule in `linux/` allows exactly that unit (start/stop/restart) for the `npcrag` user. On Windows, set `ADMIN_RESTART_CMD`.
+- **Run a speed sweep:** 1, half and all slots on every live local copy; tokens/s and seconds per reply. Players share those slots, so run it when the node is quiet.
+
+**Security.** Sign-in is `ADMIN_PASSWORD` only, never `NPC_API_KEY`. The page refuses to start without 8+ characters. The session cookie is HMAC-signed, HttpOnly, SameSite=Strict, and lasts 12 h (restarting the page signs everyone out). Five wrong passwords per address per 5 minutes means a 429. Every POST also needs the page's own `X-NPC-Admin` header, which a cross-site form can't send. Each action is logged to `data/admin-audit.jsonl` with key names only, never values. The page is plain HTTP: keep 9091 on the LAN (or put it behind TLS).
+
+**Install on Ubuntu 26.04** (as root):
+```bash
+git clone https://github.com/AELovelace/npc-rag.git /opt/npc-rag
+/opt/npc-rag/linux/build-llama.sh       # llama-server: ROCm HIP (gfx1030) + RADV Vulkan into /opt/llama.cpp
+/opt/npc-rag/linux/install-ubuntu.sh    # user, Python 3.12 venv (+ Decider), .env, systemd units, polkit rule, ufw
+```
+`build-llama.sh`:
+- gets ROCm from Ubuntu's own archive (`apt install rocm`). That was ROCm 7.1 at 26.04's launch, a few releases behind AMD.
+  - For newer ROCm, run AMD's installer first, then `ROCM_SOURCE=amd ./build-llama.sh`.
+  - If HIP can't build, it says so and still builds Vulkan. npc-rag runs fine on Vulkan alone.
+- `BUILDS=vulkan` skips HIP. `LLAMA_TAG` (default `b9481`) and `GPU_TARGETS` (default `gfx1030`, the 6800 XT) pick the build.
+
+`install-ubuntu.sh`:
+- creates the `npcrag` user in the render, video and systemd-journal groups;
+- builds `.venv` with **Python 3.12**. 26.04 ships 3.14, and the Decider stack (torch, llama-cpp-python) is tested on 3.12. So the script installs `uv` from PyPI into `/opt/uv/bootstrap`, and `uv` fetches 3.12 into `/opt/uv/python`. The system Python is left alone. Set `PYTHON_VERSION` to try another;
+- writes the node keys into `.env` (`STUDENT_FLEET=on`, `STUDENT_HOST=127.0.0.1`, `STUDENT_BASE_PORT=9100`, `CLASSIFIER_BACKEND=decider`, and a generated `ADMIN_PASSWORD`, printed once);
+- installs `linux/npc-rag.service` and `linux/npc-rag-admin.service`, plus the polkit rule;
+- allows 9091 and 9092 in ufw. If ufw is off, it says how to enable it without locking out SSH (`ufw allow OpenSSH && ufw enable`).
+
+It is safe to run again: an existing `.env` keeps its own choices. `KillMode=control-group` means stopping npc-rag stops every copy. Outside systemd, each copy also gets `PR_SET_PDEATHSIG`, so it dies with npc-rag. On Linux the auto-find prefers a HIP build over Vulkan (Windows prefers Vulkan); set `LLAMA_SERVER` to pin one. Then set `NPC_API_KEY` on the control page to the game server's `NPC_RAG_KEY`, and restart.
+
+**Don't forget:**
+- `CLASSIFIER_BACKEND=llamacpp` would now point at the control page (its old default URL is `:9091`). Student-fleet nodes use `decider`.
+- The GM handbook's `GM_LLM_URL` default is `:9090`, which nothing serves on a student-fleet node. Point it at `http://127.0.0.1:9100`.
+- The scripts in `linux/` must keep LF line endings (`.gitattributes` pins them). A CRLF breaks bash and systemd.
+
 ## Student fleet: npc-rag runs its own lidoll-fm copies (2026-10-18)
 
 `STUDENT_FLEET=on` makes npc-rag start its own llama-server copies of the companion model, instead of you starting them by hand in Sakura.
@@ -7,26 +63,27 @@
 **What it does when npc-rag starts:**
 1. **Gets the model.** It downloads the release named in `npc_rag/student_release.json` from https://lidoll.dev/gguf/. The default is `lidoll-fm-0.4-Q8_0.gguf`. It checks the size and sha256, then keeps the file in `data/models/<release>/` and reuses it offline from then on.
 2. **Finds the GPUs** with `llama-server --list-devices` (or uses `STUDENT_DEVICES`).
-3. **Starts `STUDENT_COPIES_PER_DEVICE` copies on every card,** on free ports from `STUDENT_BASE_PORT`. Each copy runs with:
+3. **Starts `STUDENT_COPIES_PER_DEVICE` copies on every card,** on free ports from `STUDENT_BASE_PORT` (default 9100, listening on `STUDENT_HOST`, default 127.0.0.1). Each copy runs with:
    - `-np STUDENT_SLOTS`
    - `-c` = slots × `STUDENT_CTX_PER_SLOT`
    - `--n-gpu-layers 999 --device <card>`
-   - plus `STUDENT_ARGS` (default `--flash-attn on --cache-ram 0`)
+   - plus `STUDENT_ARGS` (default `--flash-attn on --cache-ram 4096`)
 4. **Waits until every copy's `/health` answers,** then points itself at them: `LLM_URL` becomes all the copies, and `LLM_CONCURRENCY` becomes `STUDENT_SLOTS`.
 5. **Keeps them running.** A watchdog restarts any copy that exits, waiting longer after each crash, up to 60 s. On Windows the copies sit in a job object, so they die with npc-rag, even after `Stop-Process -Force`. `data/student-fleet.json` cleans up any leftovers on the next start.
-6. **Reports on `/health`,** under `student_fleet`: the model, ports, cards, whether each copy is alive, and its restart count.
+6. **Reports on `/health`,** under `student_fleet`: the model, ports, cards, whether each copy is alive, and its restart count. `capacity.slots` is the total reply slots; the game server's pool reads it instead of llama.cpp's `/props`.
 
 **How npc-rag shares replies across copies:** each reply goes to the copy with the lowest (requests in flight + 1) × recent seconds per reply. This is the same idea as the game server's pool between nodes. A faster card therefore takes more of the work, and a slower one still helps. Plain "least busy" gave node A's ~4× slower card 0 the same share as card 1, which created the slow tail (`llm.py` `LlamaPool`, 2026-10-18).
 
 **Why several copies per card:** llama-server feeds its GPU from **one CPU thread**. On node A's RX 6800 XTs (Vulkan), that thread was pinned at 100% while the GPU waited, which capped one copy at about 90 generated tokens/s however many slots it had. Each extra copy brings its own thread.
 
 **What to avoid:**
+- **Keep the RAM prompt cache on** (`--cache-ram 4096`, the default). Every companion and resident has a long, fixed prompt start, and the cache restores it into any slot. With the speed-aware pool, it took the 100-player test from 4.7–5.7 s to 3.7–4.4 s typical (2026-10-18).
 - **Don't compress the KV cache** (`--cache-type-k/v`). It didn't help speed, and a 1.2B model's cache is tiny anyway.
-- **Measure before and after a change** with lidollquest `python/llama_concurrency_sweep.py http://<node>:<port>`, which takes about 20 s.
+- **Measure before and after a change** with lidollquest `python/llama_concurrency_sweep.py http://127.0.0.1:9100` on the node itself (about 20 s), or the control page's **Run sweep**.
 
 **Switching a node over:**
 1. Stop Sakura's 9090/9091 copies.
-2. In `.env`, set `STUDENT_FLEET=on`. `LLAMA_SERVER` is optional: if it's empty, npc-rag looks for llama-server on PATH, then in `C:/Scripts/llama/*/` and the Sakura folder (a Vulkan build is preferred). For Titan X nodes, set it to the CUDA build.
+2. In `.env`, set `STUDENT_FLEET=on`. `LLAMA_SERVER` is optional: if it's empty, npc-rag looks for llama-server on PATH, then in `C:/Scripts/llama/*/`, the Sakura folder and `/opt/llama.cpp/*/bin` (Vulkan preferred on Windows, HIP on Linux). For Titan X nodes, set it to the CUDA build.
 3. Run `ps\Start-NpcRag.ps1`. The first start downloads the model (1.25 GB).
 
 **Updating or rolling back:** add a new release to `student_release.json` (file, bytes, sha256, download_url) and make it the `default`. To roll back, set `STUDENT_MODEL=lidoll-fm-0.3`.

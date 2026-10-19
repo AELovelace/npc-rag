@@ -22,4 +22,4 @@ pythonpath = ["."]
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.setuptools.package-data]
-npc_rag = ["decider_release.json", "decider_config/*.json", "decider_config/*.jinja", "participation_release.json", "participation_config/*.json", "participation_config/*.jinja", "multitask_release.json", "multitask_config/*.json", "multitask_config/*.jinja", "multitask_v2_release.json", "multitask_v2_config/*.json", "multitask_v2_config/*.jinja"]  # Include both releases so installed packages retain v2 rollback.
+npc_rag = ["admin_page.html", "student_release.json", "decider_release.json", "decider_config/*.json", "decider_config/*.jinja", "participation_release.json", "participation_config/*.json", "participation_config/*.jinja", "multitask_release.json", "multitask_config/*.json", "multitask_config/*.jinja", "multitask_v2_release.json", "multitask_v2_config/*.json", "multitask_v2_config/*.jinja"]  # Include both releases so installed packages retain v2 rollback.

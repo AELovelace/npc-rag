@@ -1,0 +1,22 @@
+# npc-rag control page on 9091: health, .env settings, restart. A separate unit so it stays up while npc-rag restarts.
+[Unit]
+Description=npc-rag control page (port 9091)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=npcrag
+Group=npcrag
+# render/video: rocm-smi can read the cards. systemd-journal: the page can show npc-rag's journal.
+SupplementaryGroups=render video systemd-journal
+WorkingDirectory=/opt/npc-rag
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/npc-rag/.venv/bin/python -m npc_rag admin
+Restart=on-failure
+RestartSec=5
+ProtectSystem=full
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

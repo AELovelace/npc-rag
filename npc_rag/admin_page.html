@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>npc-rag Control</title>
+<style>
+:root{--bg:#f6f4fb;--card:#fff;--ink:#231d33;--soft:#6c6585;--line:#e2ddef;--accent:#8a4fd8;--ok:#1d8a5a;--bad:#c23b4a;--warn:#b7791f;--mono:ui-monospace,SFMono-Regular,Consolas,monospace}
+@media (prefers-color-scheme:dark){:root{--bg:#16131f;--card:#211c2e;--ink:#ece8f6;--soft:#a39cbc;--line:#352e48;--accent:#b78cff;--ok:#4cc38a;--bad:#ff6b7c;--warn:#f0b54a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,sans-serif}
+header{display:flex;gap:12px;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
+header h1{font-size:17px;margin:0;flex:1}main{max-width:1150px;margin:0 auto;padding:16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px}
+.card h2{font-size:15px;margin:0 0 10px}.tile .v{font-size:22px;font-weight:650}.tile .k{color:var(--soft);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.soft{color:var(--soft)}
+table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--soft);font-weight:600}
+.scroll{overflow-x:auto}pre{font:12px/1.4 var(--mono);white-space:pre-wrap;word-break:break-word;max-height:420px;overflow:auto;margin:0;background:var(--bg);padding:10px;border-radius:8px}
+button{font:inherit;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:8px;padding:7px 14px;cursor:pointer}button.ghost{background:transparent;color:var(--accent)}button:disabled{opacity:.5;cursor:default}
+input,select{font:inherit;width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink)}
+.field{display:grid;grid-template-columns:minmax(150px,240px) 1fr;gap:4px 12px;padding:8px 0;border-bottom:1px solid var(--line)}.field label{font:13px var(--mono);word-break:break-all}.field .help{grid-column:2;color:var(--soft);font-size:12px}
+@media (max-width:640px){.field{grid-template-columns:1fr}.field .help{grid-column:1}}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}#msg{min-height:1.4em}
+#login{max-width:360px;margin:60px auto}.hidden{display:none}
+</style>
+</head>
+<body>
+<header><h1>npc-rag Control</h1><span id="clock" class="soft"></span><button id="logout" class="ghost hidden">Sign out</button></header>
+<main>
+ <form id="login" class="card hidden">
+  <h2>Sign in</h2>
+  <p class="soft">ADMIN_PASSWORD from this node's .env.</p>
+  <input id="password" type="password" autocomplete="current-password" placeholder="Password" required>
+  <p id="loginmsg" class="bad"></p>
+  <button type="submit">Sign in</button>
+ </form>
+
+ <div id="app" class="hidden">
+  <div class="card"><div id="tiles" class="grid"></div></div>
+
+  <div class="card"><h2>Student copies</h2><div class="scroll"><table id="copies"></table></div>
+   <p class="soft" id="copynote"></p></div>
+
+  <div class="card"><h2>Machine</h2><div class="scroll"><table id="machine"></table></div></div>
+
+  <div class="card"><h2>Speed sweep</h2>
+   <p class="soft">Sends a short test prompt to every local copy at 1, half and all slots. Players share those slots, so run it when the node is quiet.</p>
+   <div class="row"><button id="sweepbtn">Run sweep</button><span id="sweepstate" class="soft"></span></div>
+   <div class="scroll"><table id="sweep"></table></div></div>
+
+  <div class="card"><h2>Settings</h2>
+   <p class="soft">Saving writes <span id="envfile"></span> (with a backup) after npc-rag's own settings check passes. Secrets are write-only: leave the box empty to keep the current one. Changes apply on restart.</p>
+   <div id="fields"></div>
+   <div class="row" style="margin-top:12px"><button id="save">Save settings</button><button id="restart" class="ghost">Restart npc-rag</button><span id="msg"></span></div>
+  </div>
+
+  <div class="card"><h2>Journal</h2><div class="row" style="margin-bottom:8px"><button id="logbtn" class="ghost">Refresh</button></div><pre id="log"></pre></div>
+
+  <details class="card"><summary>Raw /health</summary><pre id="raw"></pre></details>
+ </div>
+</main>
+<script>
+const $=id=>document.getElementById(id); // Shorthand for element lookups.
+const H={'Content-Type':'application/json','X-NPC-Admin':'1'}; // The page header every POST must carry (CSRF guard).
+async function api(path,opts={}){ // fetch + JSON; a 401 shows the login form.
+ const r=await fetch(path,{credentials:'same-origin',...opts});
+ if(r.status===401){show(false);throw Error('signed out');}
+ const body=await r.json().catch(()=>({}));
+ if(!r.ok)throw Error(body.detail||('HTTP '+r.status));
+ return body;
+}
+function show(on){$('app').classList.toggle('hidden',!on);$('logout').classList.toggle('hidden',!on);$('login').classList.toggle('hidden',on);}
+function el(tag,text,cls){const e=document.createElement(tag);if(text!=null)e.textContent=String(text);if(cls)e.className=cls;return e;} // Text only, never HTML.
+function table(id,head,rows){const t=$(id);t.replaceChildren();const tr=el('tr');head.forEach(h=>tr.append(el('th',h)));t.append(tr);
+ rows.forEach(r=>{const row=el('tr');r.forEach(c=>row.append(c instanceof Node?c:el('td',c??'')));t.append(row);});}
+function td(text,cls){return el('td',text,cls);}
+function tile(k,v,cls){const d=el('div',null,'tile');d.append(el('div',k,'k'),el('div',v,'v '+(cls||'')));return d;}
+
+async function refresh(){ // Status every 10 s.
+ const s=await api('/api/status');const h=s.health||{},f=h.student_fleet||{},svc=s.service||{};
+ $('clock').textContent=new Date().toLocaleTimeString();
+ const alive=(f.copies||[]).filter(c=>c.alive).length,total=(f.copies||[]).length;
+ $('tiles').replaceChildren(
+  tile('npc-rag',h.error?'down':(h.ok?'ok':'no index'),h.error?'bad':(h.ok?'ok':'warn')),
+  tile('Main model',h.llm?'reachable':'unreachable',h.llm?'ok':'bad'),
+  tile('Reply slots',h.capacity?.slots??'?'),
+  tile('Student',f.enabled?(f.model||'?'):'off',f.enabled?'':'soft'),
+  tile('Copies alive',f.enabled?alive+' / '+total:'n/a',f.enabled&&alive<total?'bad':''),
+  tile('Decider',h.classifier===false?'down':(h.classifier?'ok':'n/a'),h.classifier===false?'bad':''),
+  tile('Service',svc.available?(svc.ActiveState+' / '+svc.SubState):'no systemd',svc.ActiveState==='active'?'ok':(svc.available?'bad':'soft')),
+  tile('Restarts',svc.NRestarts??'n/a'));
+ const recent=Object.fromEntries((h.llm_copies||[]).map(c=>[String(c.url).replace(/\/+$/,''),c])); // Speed-aware pool numbers by URL.
+ table('copies',['Device','Port','Alive','Restarts','Last exit','In flight','Recent s/reply'],(f.copies||[]).map(c=>{
+  const live=recent['http://127.0.0.1:'+c.port]||{};
+  return [c.device,c.port,td(c.alive?'yes':'no',c.alive?'ok':'bad'),c.restarts,c.last_exit??'',live.in_flight??'',live.recent_s??''];}));
+ $('copynote').textContent=f.enabled?('Slots per copy '+f.slots_per_copy+', context per slot '+f.ctx_per_slot+', file '+(f.file||'?')):'STUDENT_FLEET is off: npc-rag talks to LLM_URL ('+(h.llm_url||'?')+').';
+ const host=s.host||{},rows=[['Platform',host.platform],['Load (1/5/15 min)',(host.load||[]).join(' / ')||'n/a'],
+  ['Memory free',host.mem_total_gb?host.mem_free_gb+' of '+host.mem_total_gb+' GB':'n/a'],['Disk free',host.disk_free_gb+' GB'],
+  ['Service PID',svc.MainPID??'n/a'],['Up since',svc.ActiveEnterTimestamp??'n/a']];
+ const g=s.gpus||{};
+ if(Array.isArray(g.cards))g.cards.forEach((c,i)=>rows.push(['GPU '+i,c.name+': '+c.util_pct+'% busy, '+c.mem_used_mb+' / '+c.mem_total_mb+' MB, '+c.temp_c+' °C']));
+ else if(g.cards)Object.entries(g.cards).forEach(([card,v])=>rows.push([card,Object.entries(v).map(([k,x])=>k+': '+x).join(', ')])); // rocm-smi JSON as-is.
+ else rows.push(['GPUs','no rocm-smi / nvidia-smi']);
+ table('machine',['',''],rows);
+ const sw=s.sweep||{};$('sweepbtn').disabled=!!sw.running;
+ $('sweepstate').textContent=sw.running?'running…':(sw.error?'error: '+sw.error:(sw.at?'last run '+sw.at:''));
+ table('sweep',['Copy','Replies at once','Tokens/s total','Seconds per reply'],(sw.results||[]).map(r=>[r.url,r.level,r.tok_s,r.reply_s]));
+ $('restart').disabled=!s.restart_available;$('restart').title=s.restart_available?'':'Set ADMIN_RESTART_CMD';
+ $('raw').textContent=JSON.stringify(h,null,1);show(true);
+}
+
+async function loadSettings(){ // Builds the form, grouped.
+ const s=await api('/api/settings');$('envfile').textContent=s.env_file;const box=$('fields');box.replaceChildren();let group='';
+ for(const f of s.fields){
+  if(f.group!==group){group=f.group;box.append(el('h3',group));}
+  const row=el('div',null,'field'),label=el('label',f.key);let input;
+  if(f.kind==='bool'||f.kind.startsWith('choice:')){input=el('select');const opts=f.kind==='bool'?['','on','off']:['',...f.kind.slice(7).split('|')];
+   opts.forEach(o=>{const op=el('option',o||'(not set)');op.value=o;input.append(op);});
+   const cur=f.kind==='bool'&&f.value?(['on','true','1'].includes(f.value.toLowerCase())?'on':'off'):f.value;input.value=cur||'';}
+  else{input=el('input');input.type=f.kind==='secret'?'password':'text';input.autocomplete='off';
+   if(f.kind==='secret')input.placeholder=f.set?'set (hidden) - type to replace':'not set';else input.value=f.value;}
+  input.dataset.key=f.key;input.dataset.kind=f.kind;input.dataset.orig=f.kind==='secret'?'':input.value;
+  label.htmlFor=input.id='f_'+f.key;row.append(label,input,el('div',f.help,'help'));box.append(row);
+ }
+}
+
+async function save(){ // Only changed fields are sent.
+ const changes={};document.querySelectorAll('#fields [data-key]').forEach(i=>{if(i.value!==i.dataset.orig&&!(i.dataset.kind==='secret'&&!i.value))changes[i.dataset.key]=i.value;});
+ if(!Object.keys(changes).length){note('Nothing changed.','soft');return;}
+ try{const r=await api('/api/settings',{method:'POST',headers:H,body:JSON.stringify({changes})});
+  note('Saved '+Object.keys(changes).join(', ')+(r.backup?' (backup '+r.backup+')':'')+'. Restart npc-rag to apply.','ok');await loadSettings();}
+ catch(e){note(e.message,'bad');}
+}
+function note(text,cls){$('msg').textContent=text;$('msg').className=cls;}
+
+$('login').addEventListener('submit',async e=>{e.preventDefault();$('loginmsg').textContent='';
+ try{await api('/api/login',{method:'POST',headers:H,body:JSON.stringify({password:$('password').value})});$('password').value='';await start();}
+ catch(err){$('loginmsg').textContent=err.message;}});
+$('logout').onclick=async()=>{await fetch('/api/logout',{method:'POST',headers:H});show(false);};
+$('save').onclick=save;
+$('restart').onclick=async()=>{if(!confirm('Restart npc-rag now? Replies pause until it is back (the student copies reload too).'))return;
+ try{await api('/api/restart',{method:'POST',headers:H});note('Restart sent.','ok');}catch(e){note(e.message,'bad');}};
+$('sweepbtn').onclick=async()=>{try{await api('/api/sweep',{method:'POST',headers:H});$('sweepstate').textContent='running…';}catch(e){$('sweepstate').textContent=e.message;}};
+$('logbtn').onclick=async()=>{try{$('log').textContent=(await api('/api/logs?lines=200')).text;}catch(e){$('log').textContent=e.message;}};
+
+async function start(){await refresh();await loadSettings();$('logbtn').onclick();}
+start().catch(()=>show(false));
+setInterval(()=>{if(!$('app').classList.contains('hidden'))refresh().catch(()=>{});},10000);
+</script>
+</body>
+</html>

@@ -1,0 +1,2 @@
+# Linux deploy kit: bash and systemd break on CRLF, so these always check out with LF (also on Windows).
+linux/** text eol=lf

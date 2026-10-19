@@ -66,6 +66,14 @@ class ReindexRequest(BaseModel):
     source: str | None = None  # Override WIKI_SOURCE for this rebuild only (URL or local web/wiki folder).
 
 
+def _slots(llm) -> int | None:
+    """Local reply slots behind this npc-rag: every pooled copy's capacity (an overflow client counts only its local side)."""
+    llm = getattr(llm, "local", llm)
+    clients = getattr(llm, "_clients", None) or [llm]
+    total = sum(int(getattr(c, "capacity", 0) or 0) for c in clients)
+    return total or None
+
+
 def _fleet_view() -> dict:
     """The llama-server copies npc-rag launched itself (STUDENT_FLEET=on), or {"enabled": false}."""
     from . import student_fleet
@@ -191,6 +199,7 @@ def create_app(settings: Settings, *, embedder=None, index: WikiIndex | None = N
                 "overflow": state["llm"].view() if hasattr(state["llm"], "view") else {"enabled": False},
                 "student_fleet": _fleet_view(),
                 "llm_copies": state["llm"].copies() if hasattr(state["llm"], "copies") else None,  # Speed-aware pool (LlamaPool).
+                "capacity": {"slots": _slots(state["llm"])},  # Total local reply slots: the game server sizes its pool from this, not llama.cpp's port.
                 "classification": {"policy": CLASSIFIER_REVISION, "cache": state["classifier_cache"].view(),
                                    **state["classifier"].view()},
                 'participation': ({'enabled': True, 'healthy': await state['participation'].health(),

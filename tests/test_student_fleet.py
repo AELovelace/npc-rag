@@ -130,3 +130,24 @@ def test_llama_server_is_found_when_not_configured(tmp_path, monkeypatch):
         fleet_mod.find_llama_server("", patterns=(str(tmp_path / "missing" / "*.exe"),))
     with pytest.raises(RuntimeError, match="does not exist"):
         fleet_mod.find_llama_server(str(tmp_path / "nope.exe"))
+
+
+def test_node_layout_copies_stay_local_and_skip_9090_and_the_control_page(settings):
+    s = dataclasses.replace(settings, student_reserved_ports="9090,9091", port=9092, admin_port=9091,
+                            llama_server="llama-server", student_args="")
+    assert fleet_mod.reserved_ports(s) == {9090, 9091, 9092}
+    copies = fleet_mod.plan(["ROCm0"], 2, 9090, reserved=fleet_mod.reserved_ports(s), free=lambda p: True)
+    assert [c.port for c in copies] == [9093, 9094], "even an old STUDENT_BASE_PORT=9090 never lands on 9090 or 9091"
+    cmd = fleet_mod.command(s, Path("m.gguf"), copies[0])
+    assert cmd[cmd.index("--host") + 1] == "127.0.0.1", "copies listen on this machine only by default"
+
+
+def test_linux_prefers_a_hip_build_and_windows_a_vulkan_build(tmp_path, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    for build in ("hip", "vulkan", "cpu"):
+        (tmp_path / build / "bin").mkdir(parents=True)
+        (tmp_path / build / "bin" / "llama-server").write_bytes(b"")
+    pattern = (str(tmp_path / "**" / "llama-server"),)
+    linux = fleet_mod.find_llama_server("", patterns=pattern, prefer=("hip", "rocm", "vulkan"))
+    windows = fleet_mod.find_llama_server("", patterns=pattern, prefer=("vulkan",))
+    assert Path(linux).parent.parent.name == "hip" and Path(windows).parent.parent.name == "vulkan"

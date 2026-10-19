@@ -22,6 +22,7 @@ import re
 import shlex
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -77,8 +78,17 @@ SEARCH = ("C:/Scripts/llama/*/llama-server.exe", "C:/Scripts/llama/llama-server.
           "C:/Scripts/llama.cpp/**/llama-server.exe", "/usr/local/bin/llama-server", "/opt/llama.cpp/**/llama-server")
 
 
-def find_llama_server(configured: str = "", patterns=SEARCH) -> str:
-    """LLAMA_SERVER if set, else llama-server on PATH, else the usual install folders (a Vulkan build is preferred on Windows)."""
+PREFER = ("hip", "rocm", "vulkan") if sys.platform.startswith("linux") else ("vulkan",)  # Linux: ROCm HIP beats RADV Vulkan; Windows: Vulkan.
+
+
+def _preference(path: str, prefer=PREFER) -> tuple:
+    """Sort key: the earliest preferred build name in the two folders above the binary wins (…/hip/bin, …/Vulkan), then alphabetical."""
+    low = "/".join(Path(path).parent.parts[-2:]).lower()  # Only the build folders: a parent path that happens to say "hip" doesn't count.
+    return (next((i for i, word in enumerate(prefer) if word in low), len(prefer)), path)
+
+
+def find_llama_server(configured: str = "", patterns=SEARCH, prefer=PREFER) -> str:
+    """LLAMA_SERVER if set, else llama-server on PATH, else the usual install folders (HIP preferred on Linux, Vulkan on Windows)."""
     if configured:
         if not Path(configured).is_file():
             raise RuntimeError(f"LLAMA_SERVER={configured} does not exist")
@@ -88,7 +98,7 @@ def find_llama_server(configured: str = "", patterns=SEARCH) -> str:
     found = shutil.which("llama-server") or shutil.which("llama-server.exe")
     if found:
         return found
-    hits = sorted({h for p in patterns for h in glob.glob(p, recursive=True)}, key=lambda h: ("vulkan" not in h.lower(), h))
+    hits = sorted({h for p in patterns for h in glob.glob(p, recursive=True)}, key=lambda h: _preference(h, prefer))
     if hits:
         return hits[0]
     raise RuntimeError("STUDENT_FLEET=on but no llama-server was found. Set LLAMA_SERVER=<path to llama-server.exe> in .env "
@@ -139,9 +149,19 @@ def plan(devices: list[str], copies_per_device: int, base_port: int, reserved=()
     return out
 
 
+def reserved_ports(settings) -> set[int]:
+    """Ports a copy must never take: STUDENT_RESERVED_PORTS (9090 kept free for old Sakura copies or Cockpit, 9091 the control page), the API port and the control page port."""
+    return {int(p) for p in settings.student_reserved_ports.split(",") if p.strip()} | {settings.port, settings.admin_port}
+
+
+def _die_with_parent():  # Linux: a copy gets SIGTERM if npc-rag dies, even outside systemd (the job object does this on Windows).
+    import ctypes
+    ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, 15)  # PR_SET_PDEATHSIG = 1, SIGTERM = 15
+
+
 def command(settings, model: Path, copy: Copy) -> list[str]:
     """One llama-server copy: every layer on its card, slots x context, the fleet's extra flags."""
-    return [settings.llama_server, "-m", str(model), "--host", settings.host, "--port", str(copy.port),
+    return [settings.llama_server, "-m", str(model), "--host", settings.student_host, "--port", str(copy.port),
             "-c", str(settings.student_slots * settings.student_ctx_per_slot), "-np", str(settings.student_slots),
             "--n-gpu-layers", "999", "--device", copy.device, *shlex.split(settings.student_args, posix=os.name != "nt")]
 
@@ -260,7 +280,7 @@ class StudentFleet:
         self.model = self.model or ensure_student(s.student_model)
         clean_leftovers(s.llama_server, self.pidfile)
         devices = self.devices or self._detect()
-        self.copies = plan(devices, s.student_copies_per_device, s.student_base_port, reserved={s.port})
+        self.copies = plan(devices, s.student_copies_per_device, s.student_base_port, reserved=reserved_ports(s))
         self.logs.mkdir(parents=True, exist_ok=True)
         for copy in self.copies:
             self._spawn(copy)
@@ -320,8 +340,9 @@ class StudentFleet:
             log.write(f"\n==== {time.strftime('%Y-%m-%d %H:%M:%S')} start {self.spec.get('name')} on {copy.device}:{copy.port}\n".encode())
             log.flush()
             flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+            extra = {"preexec_fn": _die_with_parent} if os.name != "nt" and os.path.exists("/proc/self") else {}
             copy.process = self.popen(command(self.settings, self.model, copy), stdout=log, stderr=subprocess.STDOUT,
-                                      stdin=subprocess.DEVNULL, creationflags=flags)
+                                      stdin=subprocess.DEVNULL, creationflags=flags, **extra)
         self._job.add(copy.process)
 
     def _save_pids(self) -> None:

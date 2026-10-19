@@ -43,6 +43,18 @@ def cmd_serve(s, args) -> int:
     return 0
 
 
+def cmd_admin(s, args) -> int:
+    import uvicorn
+    from .admin import create_admin_app
+    try:
+        app = create_admin_app(s, getattr(args, "env_file", None))  # Refuses to start without ADMIN_PASSWORD.
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 2
+    uvicorn.run(app, host=s.admin_host, port=s.admin_port, log_level="info")
+    return 0
+
+
 def cmd_search(s, args) -> int:
     from .index import WikiIndex
     idx = WikiIndex.load(s.index_dir, _embedder(s))
@@ -175,6 +187,8 @@ def main(argv: list[str] | None = None) -> int:
 
     serve = sub.add_parser("serve", help="run the service on NPC_PORT (default 9092)")
     serve.add_argument("--env-file", help="optional alternate environment file; defaults to .env")  # No secrets enter process arguments.
+    adm = sub.add_parser("admin", help="run the control page on ADMIN_PORT (default 9091): health, settings, restart")
+    adm.add_argument("--env-file", help="the .env file the page edits (default: .env, as with serve)")
     sub.add_parser("devices", help="list native GPU names/descriptions without loading classifier weights")
 
     se = sub.add_parser("search", help="search the local index from the command line")
@@ -220,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
             uvicorn.run(create_gm_app(settings), host=settings.host, port=settings.port, log_level="info")
         return 0
     s = load_settings(getattr(args, "env_file", None))
-    commands = {"build-index": cmd_build_index, "serve": cmd_serve, "search": cmd_search, "ask": cmd_ask, "eval": cmd_eval}
+    commands = {"build-index": cmd_build_index, "serve": cmd_serve, "admin": cmd_admin, "search": cmd_search, "ask": cmd_ask, "eval": cmd_eval}
     return commands[args.cmd](s, args)
 
 

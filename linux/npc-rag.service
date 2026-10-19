@@ -1,0 +1,29 @@
+# npc-rag API on 9092 (Pip, companions, Decider) plus its student llama-server copies on 127.0.0.1:9100+.
+# install-ubuntu.sh copies this to /etc/systemd/system/ with /opt/npc-rag swapped for the real checkout path.
+[Unit]
+Description=npc-rag (LiDollQuest NPC + companion AI, port 9092)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=npcrag
+Group=npcrag
+# /dev/kfd and /dev/dri need these groups for ROCm HIP and Vulkan.
+SupplementaryGroups=render video
+WorkingDirectory=/opt/npc-rag
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/npc-rag/.venv/bin/python -m npc_rag serve
+Restart=on-failure
+RestartSec=5
+# Stopping or restarting takes every llama-server copy with it (they are in this unit's cgroup).
+KillMode=control-group
+TimeoutStopSec=30
+# The fleet keeps the model in VRAM and the prompt cache (--cache-ram) in RAM.
+LimitMEMLOCK=infinity
+NoNewPrivileges=yes
+ProtectSystem=full
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

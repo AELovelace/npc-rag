@@ -143,8 +143,16 @@ class Settings:
     student_copies_per_device: int = 2   # Copies per card: each llama-server feeds its GPU from one CPU thread, so two beat one.
     student_slots: int = 4               # -np per copy; also becomes LLM_CONCURRENCY.
     student_ctx_per_slot: int = 8192     # Context per slot; -c = slots x this (8,192 fits the longest resident prompts with room).
-    student_base_port: int = 9090        # First port tried; npc-rag's own port and busy ports are skipped.
-    student_args: str = "--flash-attn on --cache-ram 0"  # Extra llama-server flags (no KV-cache quantization: it costs speed on Vulkan).
+    student_base_port: int = 9100        # First port tried for llama copies (9090 kept free, 9091 control page, 9092 this API).
+    student_host: str = "127.0.0.1"      # Copies listen on this machine only; npc-rag and the control page are their only callers.
+    student_reserved_ports: str = "9090,9091"  # Never used for copies (npc-rag's own and the control page's ports are added too).
+    student_args: str = "--flash-attn on --cache-ram 4096"  # RAM prompt cache on (4 GB per copy): +~25% under 100 players (2026-10-18); no KV quantization.
+    # ── Control page (admin.py, `python -m npc_rag admin`): setup + health on its own port ──
+    admin_host: str = "0.0.0.0"          # Where the control page listens.
+    admin_port: int = 9091               # Node layout: 9090 kept free, 9091 this page, 9092 the API.
+    admin_password: str = ""             # Required to start the page; separate from NPC_API_KEY.
+    admin_service: str = "npc-rag.service"  # systemd unit the page shows and restarts.
+    admin_restart_cmd: str = ""          # Empty = `systemctl restart <admin_service>` on Linux; Windows needs an explicit command.
 
     def __post_init__(self):
         if not self.participation_model.strip() or not math.isfinite(self.participation_timeout) or not 0 < self.participation_timeout <= 120:
@@ -161,6 +169,10 @@ class Settings:
         if (not all(d.strip() and d == d.strip() for d in devices) or len(set(devices)) != len(devices)
                 or ("auto" in devices and len(devices) != 1)):
             raise ValueError("DECIDER_GPU_DEVICES must be auto or a comma-separated list of unique device names")
+        if not all(p.strip().isdigit() for p in self.student_reserved_ports.split(",") if p.strip()):
+            raise ValueError("STUDENT_RESERVED_PORTS must be a comma list of port numbers")
+        if not 1024 <= self.admin_port <= 65535:
+            raise ValueError("ADMIN_PORT must be 1024-65535")
         if not 2048 <= self.student_ctx_per_slot <= 65536 or not 1024 <= self.student_base_port <= 65000:
             raise ValueError("STUDENT_CTX_PER_SLOT must be 2048-65536 and STUDENT_BASE_PORT 1024-65000")
         if not (math.isfinite(self.rag_keyword_coverage) and math.isfinite(self.rag_keyword_dense)
@@ -244,6 +256,13 @@ def load_settings(env_file: str | None = None) -> Settings:
         student_copies_per_device=_positive_int("STUDENT_COPIES_PER_DEVICE", 2),
         student_slots=_positive_int("STUDENT_SLOTS", 4),
         student_ctx_per_slot=_env_int("STUDENT_CTX_PER_SLOT", 8192),
-        student_base_port=_env_int("STUDENT_BASE_PORT", 9090),
-        student_args=_env("STUDENT_ARGS", "--flash-attn on --cache-ram 0"),
+        student_base_port=_env_int("STUDENT_BASE_PORT", 9100),
+        student_host=_env("STUDENT_HOST", "127.0.0.1"),
+        student_reserved_ports=_env("STUDENT_RESERVED_PORTS", "9090,9091"),
+        student_args=_env("STUDENT_ARGS", "--flash-attn on --cache-ram 4096"),
+        admin_host=_env("ADMIN_HOST", "0.0.0.0"),
+        admin_port=_env_int("ADMIN_PORT", 9091),
+        admin_password=_env("ADMIN_PASSWORD", ""),
+        admin_service=_env("ADMIN_SERVICE", "npc-rag.service"),
+        admin_restart_cmd=_env("ADMIN_RESTART_CMD", ""),
     )
